@@ -1,0 +1,582 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+研究生招生信息爬虫 - 图形界面管理程序
+提供可视化的进度监控和控制功能
+"""
+
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext
+import threading
+import time
+import json
+import os
+from datetime import datetime
+from yanzhao_scraper_fixed import YanZhaoScraperFixed
+
+class ScraperGUI:
+    def __init__(self, root):
+        """初始化GUI界面"""
+        self.root = root
+        self.root.title("研究生招生信息爬虫管理器")
+        self.root.geometry("900x800")  # 增加窗口大小以容纳更多内容
+        self.root.minsize(800, 700)    # 增加最小窗口大小
+        
+        # 爬虫实例
+        self.scraper = None
+        self.scraper_thread = None
+        
+        # 状态变量
+        self.is_running = False
+        self.is_paused = False
+        self.start_time = None  # 开始运行时间
+        self.paused_time = 0    # 暂停累计时间
+        self.pause_start_time = None  # 暂停开始时间
+        
+        # 创建GUI界面
+        self.create_widgets()
+        
+        # 定时更新状态
+        self.update_display()
+        
+    def create_widgets(self):
+        """创建GUI组件"""
+        
+        # 主框架
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # 配置网格权重
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(4, weight=1)
+        
+        # 标题
+        title_label = ttk.Label(main_frame, text="研究生招生信息爬虫管理器", 
+                               font=("微软雅黑", 16, "bold"))
+        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
+        
+        # 进度显示区域
+        progress_frame = ttk.LabelFrame(main_frame, text="进度信息", padding="10")
+        progress_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        progress_frame.columnconfigure(1, weight=1)
+        
+        # 进度条
+        ttk.Label(progress_frame, text="总体进度:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(progress_frame, variable=self.progress_var, 
+                                          maximum=100, length=300)
+        self.progress_bar.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 10))
+        
+        self.progress_text = ttk.Label(progress_frame, text="0%")
+        self.progress_text.grid(row=0, column=2, sticky=tk.W)
+        
+        # 状态信息
+        info_grid_row = 1
+        ttk.Label(progress_frame, text="当前页面:").grid(row=info_grid_row, column=0, sticky=tk.W, pady=(5, 0))
+        self.page_info = ttk.Label(progress_frame, text="未开始")
+        self.page_info.grid(row=info_grid_row, column=1, sticky=tk.W, pady=(5, 0))
+        
+        info_grid_row += 1
+        ttk.Label(progress_frame, text="已获取记录:").grid(row=info_grid_row, column=0, sticky=tk.W, pady=(5, 0))
+        self.records_info = ttk.Label(progress_frame, text="0 条")
+        self.records_info.grid(row=info_grid_row, column=1, sticky=tk.W, pady=(5, 0))
+        
+        info_grid_row += 1
+        ttk.Label(progress_frame, text="当前状态:").grid(row=info_grid_row, column=0, sticky=tk.W, pady=(5, 0))
+        self.status_info = ttk.Label(progress_frame, text="就绪", foreground="green")
+        self.status_info.grid(row=info_grid_row, column=1, sticky=tk.W, pady=(5, 0))
+        
+        # 添加运行时间显示
+        info_grid_row += 1
+        ttk.Label(progress_frame, text="运行时间:").grid(row=info_grid_row, column=0, sticky=tk.W, pady=(5, 0))
+        self.runtime_info = ttk.Label(progress_frame, text="00:00:00", foreground="blue")
+        self.runtime_info.grid(row=info_grid_row, column=1, sticky=tk.W, pady=(5, 0))
+        
+        # 控制按钮区域
+        control_frame = ttk.LabelFrame(main_frame, text="控制面板", padding="10")
+        control_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # 按钮网格
+        self.start_button = ttk.Button(control_frame, text="开始爬取", command=self.start_scraping)
+        self.start_button.grid(row=0, column=0, padx=(0, 10), pady=5)
+        
+        self.pause_button = ttk.Button(control_frame, text="暂停", command=self.pause_scraping, state=tk.DISABLED)
+        self.pause_button.grid(row=0, column=1, padx=(0, 10), pady=5)
+        
+        self.stop_button = ttk.Button(control_frame, text="停止", command=self.stop_scraping, state=tk.DISABLED)
+        self.stop_button.grid(row=0, column=2, padx=(0, 10), pady=5)
+        
+        self.progress_button = ttk.Button(control_frame, text="查看进度", command=self.view_progress)
+        self.progress_button.grid(row=0, column=3, padx=(0, 10), pady=5)
+        
+        # 设置选项区域
+        settings_frame = ttk.LabelFrame(main_frame, text="运行设置", padding="10")
+        settings_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # 运行模式选择
+        ttk.Label(settings_frame, text="运行模式:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        self.mode_var = tk.StringVar(value="continue")
+        mode_frame = ttk.Frame(settings_frame)
+        mode_frame.grid(row=0, column=1, sticky=tk.W)
+        
+        ttk.Radiobutton(mode_frame, text="继续之前的任务", variable=self.mode_var, 
+                       value="continue").grid(row=0, column=0, sticky=tk.W, padx=(0, 15))
+        ttk.Radiobutton(mode_frame, text="重新开始", variable=self.mode_var, 
+                       value="restart").grid(row=0, column=1, sticky=tk.W, padx=(0, 15))
+        ttk.Radiobutton(mode_frame, text="测试运行", variable=self.mode_var, 
+                       value="test").grid(row=0, column=2, sticky=tk.W)
+        
+        # 页面范围设置
+        range_frame = ttk.Frame(settings_frame)
+        range_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
+        
+        ttk.Label(range_frame, text="页面范围:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        
+        ttk.Label(range_frame, text="从第").grid(row=0, column=1, sticky=tk.W, padx=(0, 5))
+        self.start_page_var = tk.StringVar(value="1")
+        start_page_entry = ttk.Entry(range_frame, textvariable=self.start_page_var, width=5)
+        start_page_entry.grid(row=0, column=2, padx=(0, 5))
+        
+        ttk.Label(range_frame, text="页到第").grid(row=0, column=3, sticky=tk.W, padx=(0, 5))
+        self.end_page_var = tk.StringVar(value="33")
+        end_page_entry = ttk.Entry(range_frame, textvariable=self.end_page_var, width=5)
+        end_page_entry.grid(row=0, column=4, padx=(0, 5))
+        
+        ttk.Label(range_frame, text="页 (测试模式限制每页").grid(row=0, column=5, sticky=tk.W, padx=(0, 5))
+        self.test_limit_var = tk.StringVar(value="2")
+        test_limit_entry = ttk.Entry(range_frame, textvariable=self.test_limit_var, width=3)
+        test_limit_entry.grid(row=0, column=6, padx=(0, 5))
+        
+        ttk.Label(range_frame, text="个院校)").grid(row=0, column=7, sticky=tk.W)
+        
+        # 无头模式选项
+        headless_frame = ttk.Frame(settings_frame)
+        headless_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
+        
+        self.headless_var = tk.BooleanVar(value=False)  # 默认显示浏览器
+        headless_checkbox = ttk.Checkbutton(headless_frame, text="无头模式运行（后台运行，不显示浏览器窗口，防止误操作）", 
+                                          variable=self.headless_var)
+        headless_checkbox.grid(row=0, column=0, sticky=tk.W)
+        
+        # 日志显示区域
+        log_frame = ttk.LabelFrame(main_frame, text="运行日志", padding="10")
+        log_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+        
+        # 日志文本框 - 调整高度并确保正确配置
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=15, width=85, wrap=tk.WORD)
+        self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
+        
+        # 清空日志按钮
+        ttk.Button(log_frame, text="清空日志", command=self.clear_log).grid(row=1, column=0, pady=(5, 0))
+        
+        # 状态栏
+        self.status_bar = ttk.Label(main_frame, text="就绪", relief=tk.SUNKEN)
+        self.status_bar.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(5, 0))
+        
+        # 检查已有数据
+        self.check_existing_data()
+        
+        # 设置初始显示值，避免显示nan
+        self.progress_var.set(0)
+        self.progress_text.config(text="0%")
+        if not hasattr(self, '_initial_page_set'):
+            self.page_info.config(text="第1页 / 共33页")
+            self._initial_page_set = True
+            
+    def check_existing_data(self):
+        """检查已有数据并更新界面"""
+        try:
+            if os.path.exists('研究生招生信息.xlsx'):
+                # 直接读取Excel文件获取数据信息，避免创建临时爬虫实例
+                import pandas as pd
+                df = pd.read_excel('研究生招生信息.xlsx')
+                data = df.to_dict('records')
+                
+                self.log_message(f"发现已有数据：{len(data)}条记录")
+                self.records_info.config(text=f"{len(data)} 条")
+                
+                # 分析已完成的页面
+                if data:
+                    completed_pages = set(record.get('页码', 0) for record in data)
+                    max_completed_page = max(completed_pages) if completed_pages else 0
+                    
+                    # 检查最后一页是否完整
+                    last_page_records = [r for r in data if r.get('页码') == max_completed_page]
+                    
+                    # 如果最后一页记录数少于预期，从该页重新开始
+                    if len(last_page_records) < 10:  # 假设每页至少有10个院校
+                        next_page = max_completed_page
+                        self.log_message(f"检测到第{max_completed_page}页数据不完整，将从第{max_completed_page}页重新开始")
+                    else:
+                        next_page = max_completed_page + 1
+                        self.log_message(f"将从第{next_page}页继续爬取")
+                        
+                    self.start_page_var.set(str(next_page))
+                    
+                    if next_page > 1:
+                        self.mode_var.set("continue")
+                    
+            else:
+                self.log_message("未发现已有数据，将从头开始")
+        except Exception as e:
+            self.log_message(f"检查已有数据时出错: {e}", "error")
+            
+    def log_message(self, message, level="info"):
+        """在日志区域显示消息"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        
+        # 根据级别设置颜色
+        color = "black"
+        if level == "error":
+            color = "red"
+        elif level == "warning":
+            color = "orange"
+        elif level == "success":
+            color = "green"
+            
+        # 插入消息
+        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        
+        # 设置颜色（如果需要的话）
+        if color != "black":
+            start_line = self.log_text.index("end-2c linestart")
+            end_line = self.log_text.index("end-1c")
+            self.log_text.tag_add(level, start_line, end_line)
+            self.log_text.tag_config(level, foreground=color)
+            
+        # 自动滚动到底部
+        self.log_text.see(tk.END)
+        
+        # 更新状态栏
+        self.status_bar.config(text=message)
+        
+        # 刷新界面
+        self.root.update()
+        
+    def clear_log(self):
+        """清空日志"""
+        self.log_text.delete(1.0, tk.END)
+        
+    def get_runtime_seconds(self):
+        """获取实际运行时间（秒）"""
+        if not self.start_time:
+            return 0
+            
+        # 计算当前运行时间
+        if self.is_paused and self.pause_start_time:
+            # 如果当前暂停中，计算到暂停开始时的时间
+            current_runtime = self.pause_start_time - self.start_time
+        else:
+            # 如果正在运行，计算到当前时间
+            current_runtime = time.time() - self.start_time
+            
+        # 减去总暂停时间
+        total_runtime = current_runtime - self.paused_time
+        return max(0, total_runtime)  # 确保不会是负数
+        
+    def format_runtime(self, seconds):
+        """格式化运行时间为 HH:MM:SS 格式"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        seconds = int(seconds % 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        
+    def update_runtime_display(self):
+        """更新运行时间显示"""
+        runtime_seconds = self.get_runtime_seconds()
+        runtime_text = self.format_runtime(runtime_seconds)
+        
+        # 根据状态设置颜色
+        if self.is_paused:
+            color = "orange"
+        elif self.is_running:
+            color = "blue"
+        else:
+            color = "gray"
+            
+        self.runtime_info.config(text=runtime_text, foreground=color)
+        
+    def progress_callback(self, progress_data):
+        """进度更新回调函数"""
+        # 验证数据有效性，防止显示nan
+        current_page = progress_data.get('current_page', 1)
+        total_pages = progress_data.get('total_pages', 33)
+        records_count = progress_data.get('records_count', 0)
+        progress_percentage = progress_data.get('progress_percentage', 0)
+        
+        # 确保数值有效
+        if not isinstance(current_page, (int, float)) or current_page != current_page:  # 检查NaN
+            current_page = 1
+        if not isinstance(total_pages, (int, float)) or total_pages != total_pages:
+            total_pages = 33
+        if not isinstance(records_count, (int, float)) or records_count != records_count:
+            records_count = 0
+        if not isinstance(progress_percentage, (int, float)) or progress_percentage != progress_percentage:
+            progress_percentage = 0
+        
+        # 更新界面显示
+        self.progress_var.set(progress_percentage)
+        self.progress_text.config(text=f"{progress_percentage:.1f}%")
+        self.page_info.config(text=f"第{int(current_page)}页 / 共{int(total_pages)}页")
+        self.records_info.config(text=f"{int(records_count)} 条")
+        
+        # 根据状态更新状态信息颜色
+        status = progress_data.get('status', '运行中')
+        status_color = "blue"
+        if status in ["完成", "成功"]:
+            status_color = "green"
+        elif status in ["错误", "失败"]:
+            status_color = "red"
+        elif status in ["暂停", "警告"]:
+            status_color = "orange"
+            
+        self.status_info.config(text=status, foreground=status_color)
+        
+    def status_callback(self, message, level="info"):
+        """状态更新回调函数"""
+        self.log_message(message, level)
+        
+    def start_scraping(self):
+        """开始爬取"""
+        try:
+            if self.is_running:
+                messagebox.showwarning("警告", "爬虫正在运行中！")
+                return
+                
+            # 获取设置参数
+            mode = self.mode_var.get()
+            start_page = int(self.start_page_var.get())
+            end_page = int(self.end_page_var.get())
+            test_limit = int(self.test_limit_var.get()) if mode == "test" else None
+            headless_mode = self.headless_var.get()  # 获取无头模式选项
+            
+            if start_page < 1 or end_page < start_page or end_page > 33:
+                messagebox.showerror("错误", "页面范围设置不正确！")
+                return
+                
+            # 记录运行模式
+            mode_text = "无头模式（后台运行）" if headless_mode else "可视模式（显示浏览器）"
+            self.log_message(f"启动爬虫 - {mode_text}")
+                
+            # 创建爬虫实例
+            self.scraper = YanZhaoScraperFixed(
+                progress_callback=self.progress_callback,
+                status_callback=self.status_callback,
+                headless=headless_mode
+            )
+            
+            # 根据模式调整参数
+            if mode == "restart":
+                self.log_message("重新开始任务，清空已有数据...")
+                self.scraper.data = []
+                self.scraper.current_page = 1
+                # 删除已有文件
+                for file in ['研究生招生信息.xlsx', '研究生招生信息.csv', 'progress_fixed.json']:
+                    if os.path.exists(file):
+                        os.remove(file)
+                        self.log_message(f"已删除文件: {file}")
+                        
+            elif mode == "test":
+                self.log_message(f"测试模式：处理第{start_page}页，限制{test_limit}个院校")
+                
+            elif mode == "continue":
+                self.log_message("继续之前的任务...")
+                start_page = self.scraper.current_page
+                self.start_page_var.set(str(start_page))
+                
+            # 更新界面状态
+            self.is_running = True
+            self.is_paused = False
+            
+            # 记录开始时间和重置暂停时间
+            self.start_time = time.time()
+            self.paused_time = 0
+            self.pause_start_time = None
+            
+            self.start_button.config(state=tk.DISABLED)
+            self.pause_button.config(state=tk.NORMAL, text="暂停")
+            self.stop_button.config(state=tk.NORMAL)
+            
+            # 启动爬虫线程
+            self.scraper_thread = threading.Thread(
+                target=self.run_scraper,
+                args=(start_page, end_page, test_limit),
+                daemon=True
+            )
+            self.scraper_thread.start()
+            
+            self.log_message("爬虫已启动", "success")
+            
+        except ValueError:
+            messagebox.showerror("错误", "页面范围设置必须是数字！")
+        except Exception as e:
+            messagebox.showerror("错误", f"启动爬虫时出错: {e}")
+            self.log_message(f"启动爬虫时出错: {e}", "error")
+            
+    def run_scraper(self, start_page, end_page, test_limit):
+        """在线程中运行爬虫"""
+        try:
+            success = self.scraper.run(
+                start_page=start_page, 
+                end_page=end_page, 
+                max_universities_per_page=test_limit
+            )
+            
+            if success:
+                self.log_message("爬虫运行完成！", "success")
+            else:
+                self.log_message("爬虫运行失败！", "error")
+                
+        except Exception as e:
+            self.log_message(f"爬虫运行异常: {e}", "error")
+            
+        finally:
+            # 重置界面状态
+            self.is_running = False
+            self.is_paused = False
+            
+            # 重置时间状态
+            if self.pause_start_time:
+                # 如果在暂停状态下结束，计算最后的暂停时间
+                self.paused_time += time.time() - self.pause_start_time
+                self.pause_start_time = None
+            
+            self.start_button.config(state=tk.NORMAL)
+            self.pause_button.config(state=tk.DISABLED)
+            self.stop_button.config(state=tk.DISABLED)
+            
+    def pause_scraping(self):
+        """暂停/继续爬取"""
+        if not self.scraper or not self.is_running:
+            return
+            
+        if not self.is_paused:
+            # 暂停
+            self.scraper.pause()
+            self.is_paused = True
+            self.pause_button.config(text="继续")
+            self.log_message("爬虫已暂停", "warning")
+            
+            # 记录暂停开始时间
+            self.pause_start_time = time.time()
+            
+        else:
+            # 继续
+            self.scraper.resume()
+            self.is_paused = False
+            self.pause_button.config(text="暂停")
+            self.log_message("爬虫已继续", "success")
+            
+            # 计算暂停时间并累加
+            if self.pause_start_time:
+                self.paused_time += time.time() - self.pause_start_time
+                self.pause_start_time = None # 重置暂停开始时间
+            
+    def stop_scraping(self):
+        """停止爬取"""
+        if not self.scraper or not self.is_running:
+            return
+            
+        result = messagebox.askyesno("确认", "确定要停止爬虫吗？已获取的数据将会保存。")
+        if result:
+            self.scraper.stop()
+            self.log_message("正在停止爬虫...", "warning")
+            
+    def view_progress(self):
+        """查看详细进度"""
+        try:
+            if os.path.exists('progress_fixed.json'):
+                with open('progress_fixed.json', 'r', encoding='utf-8') as f:
+                    progress_data = json.load(f)
+                    
+                # 创建进度查看窗口
+                progress_window = tk.Toplevel(self.root)
+                progress_window.title("详细进度信息")
+                progress_window.geometry("500x400")
+                
+                # 进度信息文本
+                progress_text = scrolledtext.ScrolledText(progress_window, height=20, width=60)
+                progress_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                
+                # 显示进度信息
+                progress_text.insert(tk.END, f"最后更新时间: {progress_data.get('last_update', '未知')}\n")
+                progress_text.insert(tk.END, f"当前页面: {progress_data.get('current_page', 0)}\n")
+                progress_text.insert(tk.END, f"总页面数: {progress_data.get('total_pages', 33)}\n")
+                progress_text.insert(tk.END, f"总记录数: {progress_data.get('total_records', 0)}\n")
+                progress_text.insert(tk.END, f"完成百分比: {progress_data.get('progress_percentage', 0):.2f}%\n")
+                progress_text.insert(tk.END, f"状态: {progress_data.get('status', '未知')}\n\n")
+                
+                progress_text.insert(tk.END, "已完成页面:\n")
+                completed_pages = progress_data.get('completed_pages', [])
+                if completed_pages:
+                    progress_text.insert(tk.END, f"{', '.join(map(str, completed_pages))}\n\n")
+                else:
+                    progress_text.insert(tk.END, "无\n\n")
+                    
+                progress_text.insert(tk.END, "各页面数据统计:\n")
+                data_count_by_page = progress_data.get('data_count_by_page', {})
+                for page, count in sorted(data_count_by_page.items(), key=lambda x: int(x[0])):
+                    progress_text.insert(tk.END, f"第{page}页: {count}条记录\n")
+                    
+                progress_text.config(state=tk.DISABLED)
+                
+            else:
+                messagebox.showinfo("信息", "未找到进度文件")
+                
+        except Exception as e:
+            messagebox.showerror("错误", f"查看进度时出错: {e}")
+            
+    def update_display(self):
+        """定时更新显示"""
+        try:
+            # 更新运行时间显示
+            self.update_runtime_display()
+            
+            # 如果爬虫正在运行，更新状态
+            if self.scraper and self.is_running:
+                status = self.scraper.get_status()
+                if not status['is_running'] and self.is_running:
+                    # 爬虫已结束
+                    self.is_running = False
+                    self.is_paused = False
+                    self.start_button.config(state=tk.NORMAL)
+                    self.pause_button.config(state=tk.DISABLED)
+                    self.stop_button.config(state=tk.DISABLED)
+                    
+        except Exception as e:
+            pass  # 忽略更新错误
+            
+        # 继续定时更新
+        self.root.after(1000, self.update_display)
+        
+    def on_closing(self):
+        """窗口关闭事件"""
+        if self.is_running:
+            result = messagebox.askyesnocancel("确认", "爬虫正在运行，是否停止并退出？")
+            if result is None:  # 取消
+                return
+            elif result:  # 是，停止并退出
+                if self.scraper:
+                    self.scraper.stop()
+                # 等待一下让爬虫保存数据
+                time.sleep(2)
+                
+        self.root.destroy()
+
+def main():
+    """主函数"""
+    root = tk.Tk()
+    app = ScraperGUI(root)
+    
+    # 设置窗口关闭事件
+    root.protocol("WM_DELETE_WINDOW", app.on_closing)
+    
+    # 启动GUI
+    root.mainloop()
+
+if __name__ == "__main__":
+    main() 
