@@ -14,6 +14,57 @@ import os
 from datetime import datetime
 from yanzhao_scraper_fixed import YanZhaoScraperFixed
 
+class ScraperGUIWrapper(YanZhaoScraperFixed):
+    """爬虫GUI包装类，处理文件占用等GUI特定问题"""
+    
+    def __init__(self, gui_instance, *args, **kwargs):
+        self.gui_instance = gui_instance
+        super().__init__(*args, **kwargs)
+    
+    def wait_for_file_access_confirmation(self, filename, retry_count, max_retries):
+        """GUI版本的文件访问确认"""
+        # 在主线程中显示消息框
+        def show_file_occupied_dialog():
+            result = messagebox.askretrycancel(
+                "文件被占用", 
+                f"文件 {filename} 正在被其他程序使用（可能是Excel）。\n\n"
+                f"请关闭该文件后点击\"重试\"继续保存，或点击\"取消\"跳过本次保存。\n\n"
+                f"当前重试次数：{retry_count}/{max_retries}",
+                icon='warning'
+            )
+            return result
+        
+        # 由于这可能在工作线程中调用，需要在主线程中显示对话框
+        if self.gui_instance:
+            self.gui_instance.root.after(0, lambda: self._handle_file_occupied_dialog(filename, retry_count, max_retries))
+            
+            # 等待用户响应（通过共享变量）
+            timeout = 60  # 60秒超时
+            wait_time = 0
+            while not hasattr(self, '_file_dialog_response') and wait_time < timeout:
+                time.sleep(0.5)
+                wait_time += 0.5
+            
+            # 获取响应并清理
+            if hasattr(self, '_file_dialog_response'):
+                response = self._file_dialog_response
+                delattr(self, '_file_dialog_response')
+                if not response:  # 用户选择取消
+                    raise Exception("用户取消文件保存")
+        else:
+            time.sleep(2)  # 后备方案
+    
+    def _handle_file_occupied_dialog(self, filename, retry_count, max_retries):
+        """在主线程中处理文件占用对话框"""
+        result = messagebox.askretrycancel(
+            "文件被占用", 
+            f"文件 {filename} 正在被其他程序使用（可能是Excel）。\n\n"
+            f"请关闭该文件后点击\"重试\"继续保存，或点击\"取消\"跳过本次保存。\n\n"
+            f"当前重试次数：{retry_count}/{max_retries}",
+            icon='warning'
+        )
+        self._file_dialog_response = result
+
 class ScraperGUI:
     def __init__(self, root):
         """初始化GUI界面"""
@@ -155,7 +206,7 @@ class ScraperGUI:
         headless_frame = ttk.Frame(settings_frame)
         headless_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
         
-        self.headless_var = tk.BooleanVar(value=False)  # 默认显示浏览器
+        self.headless_var = tk.BooleanVar(value=True)  # 默认无头模式运行
         headless_checkbox = ttk.Checkbutton(headless_frame, text="无头模式运行（后台运行，不显示浏览器窗口，防止误操作）", 
                                           variable=self.headless_var)
         headless_checkbox.grid(row=0, column=0, sticky=tk.W)
@@ -363,7 +414,8 @@ class ScraperGUI:
             self.log_message(f"启动爬虫 - {mode_text}")
                 
             # 创建爬虫实例
-            self.scraper = YanZhaoScraperFixed(
+            self.scraper = ScraperGUIWrapper(
+                gui_instance=self,
                 progress_callback=self.progress_callback,
                 status_callback=self.status_callback,
                 headless=headless_mode
@@ -374,11 +426,15 @@ class ScraperGUI:
                 self.log_message("重新开始任务，清空已有数据...")
                 self.scraper.data = []
                 self.scraper.current_page = 1
-                # 删除已有文件
-                for file in ['研究生招生信息.xlsx', '研究生招生信息.csv', 'progress_fixed.json']:
-                    if os.path.exists(file):
-                        os.remove(file)
-                        self.log_message(f"已删除文件: {file}")
+                # 清空进度文件，但保留Excel文件（会在保存时重写内容）
+                if os.path.exists('progress_fixed.json'):
+                    os.remove('progress_fixed.json')
+                    self.log_message("已清空进度记录")
+                # 清空CSV文件（如果存在）
+                if os.path.exists('研究生招生信息.csv'):
+                    os.remove('研究生招生信息.csv')
+                    self.log_message("已清空CSV文件")
+                self.log_message("Excel文件将在首次保存时重写内容")
                         
             elif mode == "test":
                 self.log_message(f"测试模式：处理第{start_page}页，限制{test_limit}个院校")

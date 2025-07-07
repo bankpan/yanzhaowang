@@ -45,6 +45,9 @@ class YanZhaoScraperFixed:
         self.username = "18042003196"
         self.password = "421950abcABC"
         
+        # 设置Excel文件名（统一使用固定文件名）
+        self.excel_filename = "研究生招生信息.xlsx"
+        
         # 尝试加载已有数据和进度
         self.load_existing_data()
         
@@ -126,7 +129,7 @@ class YanZhaoScraperFixed:
         """加载已有数据和进度，实现断点续传"""
         try:
             # 检查是否有已保存的Excel文件
-            excel_file = '研究生招生信息.xlsx'
+            excel_file = self.excel_filename
             progress_file = 'progress_fixed.json'
             
             if os.path.exists(excel_file):
@@ -502,10 +505,20 @@ class YanZhaoScraperFixed:
             self.logger.error(f"提取详情失败: {e}")
             return None
             
-    def save_data_to_excel(self, filename='研究生招生信息.xlsx'):
-        """保存数据到Excel文件 - 简化版，只用一个文件"""
-        try:
-            if self.data:
+    def save_data_to_excel(self, filename=None):
+        """保存数据到Excel文件 - 带文件占用检测和重试机制"""
+        if filename is None:
+            filename = self.excel_filename
+            
+        if not self.data:
+            self.logger.warning("没有数据可保存")
+            return False
+        
+        max_retries = 5  # 最大重试次数
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
                 df = pd.DataFrame(self.data)
                 df.to_excel(filename, index=False, engine='openpyxl')
                 self.logger.info(f"数据已更新到 {filename}，共{len(self.data)}条记录")
@@ -515,13 +528,43 @@ class YanZhaoScraperFixed:
                 df.to_csv(csv_filename, index=False, encoding='utf-8-sig')
                 
                 return True
-            else:
-                self.logger.warning("没有数据可保存")
-                return False
                 
-        except Exception as e:
-            self.logger.error(f"保存数据失败: {e}")
-            return False
+            except PermissionError as e:
+                retry_count += 1
+                self.logger.warning(f"文件被占用，第{retry_count}次重试保存 {filename}")
+                
+                # 通过回调通知GUI显示文件占用提示
+                if self.status_callback:
+                    self.status_callback(f"文件 {filename} 被占用，请关闭Excel文件后点击确定（第{retry_count}/{max_retries}次尝试）", "warning")
+                
+                # 如果是在GUI环境中，需要等待用户操作
+                if self.status_callback:
+                    # 通过消息队列等待用户确认
+                    self.wait_for_file_access_confirmation(filename, retry_count, max_retries)
+                else:
+                    # 命令行环境下直接提示并等待
+                    input(f"文件 {filename} 被占用，请关闭Excel文件后按回车继续...")
+                    
+            except Exception as e:
+                self.logger.error(f"保存数据失败: {e}")
+                if self.status_callback:
+                    self.status_callback(f"保存失败: {e}", "error")
+                return False
+        
+        # 如果所有重试都失败了
+        self.logger.error(f"文件 {filename} 保存失败，已重试{max_retries}次")
+        if self.status_callback:
+            self.status_callback(f"文件保存失败，已重试{max_retries}次，请检查文件权限", "error")
+        return False
+    
+    def wait_for_file_access_confirmation(self, filename, retry_count, max_retries):
+        """等待用户确认文件访问权限已解除"""
+        # 这个方法将被GUI重写，命令行版本直接等待
+        if not self.status_callback:
+            time.sleep(2)  # 命令行版本简单等待2秒
+        else:
+            # GUI版本会通过回调处理用户交互
+            pass
             
     def save_progress(self, status="running"):
         """保存进度信息"""
@@ -578,14 +621,14 @@ class YanZhaoScraperFixed:
                 '保存原因': reason,
                 '当前页码': self.current_page,
                 '总记录数': len(self.data),
-                '文件名': '研究生招生信息.xlsx'
+                '文件名': self.excel_filename
             }
             
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             with open(f'紧急保存摘要_{timestamp}.json', 'w', encoding='utf-8') as f:
                 json.dump(summary, f, ensure_ascii=False, indent=2)
                 
-            self.logger.info(f"紧急保存完成: 研究生招生信息.xlsx")
+            self.logger.info(f"紧急保存完成: {self.excel_filename}")
             return success
             
         except Exception as e:
@@ -746,6 +789,8 @@ class YanZhaoScraperFixed:
             pass
 
 
+
+
 def main():
     """主函数"""
     print("研究生招生信息爬虫 - 修复版（支持断点续传）")
@@ -791,11 +836,11 @@ def main():
                 print("重新开始任务，将清空已有数据...")
                 scraper.data = []
                 scraper.current_page = 1
-                # 删除已有文件
-                for file in ['研究生招生信息.xlsx', '研究生招生信息.csv', 'progress_fixed.json']:
-                    if os.path.exists(file):
-                        os.remove(file)
-                        print(f"已删除文件: {file}")
+                # 清空进度文件，Excel文件将在保存时重写内容
+                if os.path.exists('progress_fixed.json'):
+                    os.remove('progress_fixed.json')
+                    print("已清空进度记录")
+                print("Excel文件将在首次保存时重写内容")
                         
             elif user_choice == '3':
                 # 测试运行
