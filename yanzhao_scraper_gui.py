@@ -12,7 +12,7 @@ import time
 import json
 import os
 from datetime import datetime
-from yanzhao_scraper_fixed import YanZhaoScraperFixed
+from yanzhao_scraper_fixed import YanZhaoScraperFixed, MAJOR_CONFIG
 
 class ScraperGUIWrapper(YanZhaoScraperFixed):
     """爬虫GUI包装类，处理文件占用等GUI特定问题"""
@@ -46,7 +46,7 @@ class ScraperGUIWrapper(YanZhaoScraperFixed):
                 wait_time += 0.5
             
             # 获取响应并清理
-            if hasattr(self, '_file_dialog_response'):
+            if hasattr(self, '_file_fdadialog_response'):
                 response = self._file_dialog_response
                 delattr(self, '_file_dialog_response')
                 if not response:  # 用户选择取消
@@ -83,12 +83,101 @@ class ScraperGUI:
         self.start_time = None  # 开始运行时间
         self.paused_time = 0    # 暂停累计时间
         self.pause_start_time = None  # 暂停开始时间
+        self.current_major = "125300"  # 默认专业
         
         # 创建GUI界面
         self.create_widgets()
         
         # 定时更新状态
         self.update_display()
+        
+    def on_major_changed(self, event=None):
+        """专业选择改变时的回调"""
+        try:
+            selected = self.major_var.get()
+            if " - " in selected:
+                major_code = selected.split(" - ")[0]
+                self.current_major = major_code
+                major_name = MAJOR_CONFIG[major_code]["name"]
+                
+                self.log_message(f"已切换到专业：{major_name} ({major_code})", "info")
+                
+                # 检查该专业是否有现有数据
+                self.check_existing_data_for_major(major_code)
+                
+                # 更新页面范围显示
+                self.update_page_range_for_major(major_code)
+                
+        except Exception as e:
+            self.log_message(f"切换专业失败: {e}", "error")
+    
+    def update_page_range_for_major(self, major_code):
+        """根据专业更新页面范围显示"""
+        try:
+            progress_file = f'progress_{major_code}.json'
+            
+            # 重置页面显示信息
+            self.page_info.config(text="未开始")
+            self.records_info.config(text="0 条")
+            self.status_info.config(text="就绪", foreground="green")
+            
+            if os.path.exists(progress_file):
+                # 如果有进度文件，使用保存的信息
+                with open(progress_file, 'r', encoding='utf-8') as f:
+                    progress = json.load(f)
+                    current_page = progress.get('current_page', 1)
+                    total_pages = progress.get('total_pages', 1)
+                    records_count = progress.get('records_count', 0)
+                    
+                    # 更新起始页面为当前进度
+                    self.start_page_var.set(str(current_page))
+                    
+                    # 更新显示信息
+                    self.page_info.config(text=f"第{current_page}页 / 共{total_pages}页")
+                    self.records_info.config(text=f"{records_count} 条")
+                    
+                    # 如果有进度，自动选择继续模式
+                    if current_page > 1 or records_count > 0:
+                        self.mode_var.set("continue")
+                        self.status_info.config(text="有进度", foreground="orange")
+                    
+                    self.log_message(f"已加载该专业的进度：从第{current_page}页继续，共{total_pages}页", "info")
+            else:
+                # 如果没有进度文件，重置为默认值
+                self.start_page_var.set("1")
+                self.mode_var.set("restart")
+                self.log_message(f"该专业无进度记录，将从第1页开始", "info")
+                
+        except Exception as e:
+            self.log_message(f"更新页面范围失败: {e}", "error")
+    
+    def check_existing_data_for_major(self, major_code):
+        """检查指定专业是否有现有数据"""
+        try:
+            major_name = MAJOR_CONFIG[major_code]["name"]
+            excel_file = f"研究生招生信息_{major_name}.xlsx"
+            progress_file = f'progress_{major_code}.json'
+            
+            has_excel = os.path.exists(excel_file)
+            has_progress = os.path.exists(progress_file)
+            
+            if has_excel or has_progress:
+                if has_excel:
+                    self.log_message(f"发现该专业的数据文件：{excel_file}", "info")
+                
+                if has_progress:
+                    with open(progress_file, 'r', encoding='utf-8') as f:
+                        progress = json.load(f)
+                        current_page = progress.get('current_page', 1)
+                        total_pages = progress.get('total_pages', 1)
+                        records_count = progress.get('records_count', 0)
+                        
+                        self.log_message(f"该专业进度：第{current_page}页/共{total_pages}页，已获取{records_count}条记录", "info")
+            else:
+                self.log_message(f"该专业暂无数据文件", "info")
+                
+        except Exception as e:
+            self.log_message(f"检查专业数据失败: {e}", "error")
         
     def create_widgets(self):
         """创建GUI组件"""
@@ -166,11 +255,24 @@ class ScraperGUI:
         settings_frame = ttk.LabelFrame(main_frame, text="运行设置", padding="10")
         settings_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         
+        # 专业选择
+        ttk.Label(settings_frame, text="选择专业:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        self.major_var = tk.StringVar(value="125300")
+        major_frame = ttk.Frame(settings_frame)
+        major_frame.grid(row=0, column=1, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        self.major_combobox = ttk.Combobox(major_frame, textvariable=self.major_var, width=30, state="readonly")
+        major_options = [f"{code} - {info['name']}" for code, info in MAJOR_CONFIG.items()]
+        self.major_combobox['values'] = major_options
+        self.major_combobox.set("125300 - 会计专硕")  # 默认选择
+        self.major_combobox.grid(row=0, column=0, sticky=(tk.W, tk.E))
+        self.major_combobox.bind('<<ComboboxSelected>>', self.on_major_changed)
+        
         # 运行模式选择
-        ttk.Label(settings_frame, text="运行模式:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        ttk.Label(settings_frame, text="运行模式:").grid(row=1, column=0, sticky=tk.W, padx=(0, 10))
         self.mode_var = tk.StringVar(value="continue")
         mode_frame = ttk.Frame(settings_frame)
-        mode_frame.grid(row=0, column=1, sticky=tk.W)
+        mode_frame.grid(row=1, column=1, sticky=tk.W)
         
         ttk.Radiobutton(mode_frame, text="继续之前的任务", variable=self.mode_var, 
                        value="continue").grid(row=0, column=0, sticky=tk.W, padx=(0, 15))
@@ -181,7 +283,7 @@ class ScraperGUI:
         
         # 页面范围设置
         range_frame = ttk.Frame(settings_frame)
-        range_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
+        range_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
         
         ttk.Label(range_frame, text="页面范围:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
         
@@ -191,11 +293,11 @@ class ScraperGUI:
         start_page_entry.grid(row=0, column=2, padx=(0, 5))
         
         ttk.Label(range_frame, text="页到第").grid(row=0, column=3, sticky=tk.W, padx=(0, 5))
-        self.end_page_var = tk.StringVar(value="33")
+        self.end_page_var = tk.StringVar(value="")  # 默认为空，自动检测
         end_page_entry = ttk.Entry(range_frame, textvariable=self.end_page_var, width=5)
         end_page_entry.grid(row=0, column=4, padx=(0, 5))
         
-        ttk.Label(range_frame, text="页 (测试模式限制每页").grid(row=0, column=5, sticky=tk.W, padx=(0, 5))
+        ttk.Label(range_frame, text="页 (空白=自动检测, 测试模式限制每页").grid(row=0, column=5, sticky=tk.W, padx=(0, 5))
         self.test_limit_var = tk.StringVar(value="2")
         test_limit_entry = ttk.Entry(range_frame, textvariable=self.test_limit_var, width=3)
         test_limit_entry.grid(row=0, column=6, padx=(0, 5))
@@ -203,13 +305,10 @@ class ScraperGUI:
         ttk.Label(range_frame, text="个院校)").grid(row=0, column=7, sticky=tk.W)
         
         # 无头模式选项
-        headless_frame = ttk.Frame(settings_frame)
-        headless_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
-        
-        self.headless_var = tk.BooleanVar(value=True)  # 默认无头模式运行
-        headless_checkbox = ttk.Checkbutton(headless_frame, text="无头模式运行（后台运行，不显示浏览器窗口，防止误操作）", 
-                                          variable=self.headless_var)
-        headless_checkbox.grid(row=0, column=0, sticky=tk.W)
+        self.headless_var = tk.BooleanVar(value=True)  # 默认选中无头模式
+        headless_check = ttk.Checkbutton(range_frame, text="无头模式（后台运行）", variable=self.headless_var)
+        headless_check.grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(5, 0))
+
         
         # 日志显示区域
         log_frame = ttk.LabelFrame(main_frame, text="运行日志", padding="10")
@@ -239,40 +338,11 @@ class ScraperGUI:
             self._initial_page_set = True
             
     def check_existing_data(self):
-        """检查已有数据并更新界面"""
+        """检查当前专业的已有数据并更新界面"""
         try:
-            if os.path.exists('研究生招生信息.xlsx'):
-                # 直接读取Excel文件获取数据信息，避免创建临时爬虫实例
-                import pandas as pd
-                df = pd.read_excel('研究生招生信息.xlsx')
-                data = df.to_dict('records')
+            # 检查当前选择的专业的数据
+            self.check_existing_data_for_major(self.current_major)
                 
-                self.log_message(f"发现已有数据：{len(data)}条记录")
-                self.records_info.config(text=f"{len(data)} 条")
-                
-                # 分析已完成的页面
-                if data:
-                    completed_pages = set(record.get('页码', 0) for record in data)
-                    max_completed_page = max(completed_pages) if completed_pages else 0
-                    
-                    # 检查最后一页是否完整
-                    last_page_records = [r for r in data if r.get('页码') == max_completed_page]
-                    
-                    # 如果最后一页记录数少于预期，从该页重新开始
-                    if len(last_page_records) < 10:  # 假设每页至少有10个院校
-                        next_page = max_completed_page
-                        self.log_message(f"检测到第{max_completed_page}页数据不完整，将从第{max_completed_page}页重新开始")
-                    else:
-                        next_page = max_completed_page + 1
-                        self.log_message(f"将从第{next_page}页继续爬取")
-                        
-                    self.start_page_var.set(str(next_page))
-                    
-                    if next_page > 1:
-                        self.mode_var.set("continue")
-                    
-            else:
-                self.log_message("未发现已有数据，将从头开始")
         except Exception as e:
             self.log_message(f"检查已有数据时出错: {e}", "error")
             
@@ -397,28 +467,41 @@ class ScraperGUI:
             if self.is_running:
                 messagebox.showwarning("警告", "爬虫正在运行中！")
                 return
+            
+            # 获取专业代码
+            selected = self.major_var.get()
+            if " - " in selected:
+                major_code = selected.split(" - ")[0]
+            else:
+                major_code = "125300"  # 默认值
                 
             # 获取设置参数
             mode = self.mode_var.get()
             start_page = int(self.start_page_var.get())
-            end_page = int(self.end_page_var.get())
+            end_page = int(self.end_page_var.get()) if self.end_page_var.get() else None
             test_limit = int(self.test_limit_var.get()) if mode == "test" else None
             headless_mode = self.headless_var.get()  # 获取无头模式选项
             
-            if start_page < 1 or end_page < start_page or end_page > 33:
-                messagebox.showerror("错误", "页面范围设置不正确！")
+            if start_page < 1:
+                messagebox.showerror("错误", "起始页面必须大于0！")
+                return
+            
+            if end_page and end_page < start_page:
+                messagebox.showerror("错误", "结束页面不能小于起始页面！")
                 return
                 
             # 记录运行模式
             mode_text = "无头模式（后台运行）" if headless_mode else "可视模式（显示浏览器）"
-            self.log_message(f"启动爬虫 - {mode_text}")
+            major_name = MAJOR_CONFIG[major_code]["name"]
+            self.log_message(f"启动爬虫 - {mode_text} - 专业：{major_name}")
                 
             # 创建爬虫实例
             self.scraper = ScraperGUIWrapper(
                 gui_instance=self,
                 progress_callback=self.progress_callback,
                 status_callback=self.status_callback,
-                headless=headless_mode
+                headless=headless_mode,
+                major_code=major_code
             )
             
             # 根据模式调整参数
@@ -426,15 +509,23 @@ class ScraperGUI:
                 self.log_message("重新开始任务，清空已有数据...")
                 self.scraper.data = []
                 self.scraper.current_page = 1
-                # 清空进度文件，但保留Excel文件（会在保存时重写内容）
-                if os.path.exists('progress_fixed.json'):
-                    os.remove('progress_fixed.json')
-                    self.log_message("已清空进度记录")
-                # 清空CSV文件（如果存在）
-                if os.path.exists('研究生招生信息.csv'):
-                    os.remove('研究生招生信息.csv')
-                    self.log_message("已清空CSV文件")
-                self.log_message("Excel文件将在首次保存时重写内容")
+                
+                # 清空该专业的进度文件
+                progress_file = f'progress_{major_code}.json'
+                if os.path.exists(progress_file):
+                    os.remove(progress_file)
+                    self.log_message(f"已清空专业{major_code}的进度记录")
+                
+                # 删除该专业的Excel文件（重新开始时）
+                excel_file = f"研究生招生信息_{MAJOR_CONFIG[major_code]['name']}.xlsx"
+                if os.path.exists(excel_file):
+                    try:
+                        os.remove(excel_file)
+                        self.log_message(f"已删除原有数据文件：{excel_file}")
+                    except Exception as e:
+                        self.log_message(f"删除数据文件失败：{e}，将在保存时重写", "warning")
+                
+                self.log_message("重新开始，将从第1页开始爬取")
                         
             elif mode == "test":
                 self.log_message(f"测试模式：处理第{start_page}页，限制{test_limit}个院校")
