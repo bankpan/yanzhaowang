@@ -17,7 +17,7 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException,
 import logging
 from datetime import datetime
 import os
-import json
+# import json  # 不再需要，已去掉进度文件依赖
 import threading
 import queue
 
@@ -51,10 +51,11 @@ MAJOR_CONFIG = {
 }
 
 class YanZhaoScraperFixed:
-    def __init__(self, progress_callback=None, status_callback=None, headless=False, major_code="125300"):
+    def __init__(self, progress_callback=None, status_callback=None, headless=False, major_code="125300", study_mode="1"):
         """初始化爬虫"""
         self.headless = headless  # 无头模式标志
         self.major_code = major_code  # 选择的专业代码
+        self.study_mode = study_mode  # 学习方式：1=全日制，2=非全日制
         self.major_info = MAJOR_CONFIG.get(major_code, MAJOR_CONFIG["125300"])  # 专业信息
         
         # 先设置回调函数，避免setup_driver调用时出错
@@ -77,11 +78,15 @@ class YanZhaoScraperFixed:
         self.username = "18042003196"
         self.password = "421950abcABC"
         
-        # 设置Excel文件名（固定文件名，不使用时间戳）
-        self.excel_filename = f"研究生招生信息_{self.major_info['name']}.xlsx"
+        # 设置Excel文件名（包含学习方式信息）
+        study_mode_name = "全日制" if self.study_mode == "1" else "非全日制"
+        self.excel_filename = f"研究生招生信息_{self.major_info['name']}_{study_mode_name}.xlsx"
         
         # 尝试加载已有数据和进度
         self.load_existing_data()
+        
+        # 在初始化时就计算好起始页，不需要等登录
+        self.update_status(f"✓ 初始化完成 - 起始页：第{self.current_page}页，已有记录：{len(self.data)}条", "info")
         
     def get_major_options():
         """获取所有可用的专业选项"""
@@ -110,7 +115,6 @@ class YanZhaoScraperFixed:
         try:
             # 使用固定的Excel文件名
             excel_file = self.excel_filename
-            progress_file = f'progress_{self.major_code}.json'
             
             # 检查Excel文件是否存在
             if os.path.exists(excel_file):
@@ -126,18 +130,28 @@ class YanZhaoScraperFixed:
                         completed_pages = set(record.get('页码', 0) for record in self.data)
                         max_completed_page = max(completed_pages) if completed_pages else 0
                         
-                        # 检查最后一页是否完整
+                        # 检查最后一页的院校数量是否完整
                         last_page_records = [r for r in self.data if r.get('页码') == max_completed_page]
                         
-                        # 如果最后一页记录数少于预期，从该页重新开始
-                        if len(last_page_records) < 10:  # 假设每页至少有10个院校
+                        # 统计最后一页的院校数量（通过院校名称去重）
+                        last_page_universities = set()
+                        for record in last_page_records:
+                            university_name = record.get('招生单位', '') or record.get('院校名称', '')
+                            if university_name:
+                                last_page_universities.add(university_name)
+                        
+                        university_count = len(last_page_universities)
+                        
+                        # 如果最后一页院校数量<10个，说明该页不完整，从该页重新开始
+                        # 如果院校数量>=10个，说明该页完整，从下一页开始
+                        if university_count < 10:
                             self.current_page = max_completed_page
                             # 移除不完整页面的数据
                             self.data = [r for r in self.data if r.get('页码') != max_completed_page]
-                            print(f"检测到第{max_completed_page}页数据不完整，将从第{max_completed_page}页重新开始")
+                            print(f"检测到第{max_completed_page}页仅有{university_count}个院校（不完整），将从第{max_completed_page}页重新开始")
                         else:
                             self.current_page = max_completed_page + 1
-                            print(f"将从第{self.current_page}页继续爬取")
+                            print(f"第{max_completed_page}页有{university_count}个院校（完整），将从第{self.current_page}页继续爬取")
                             
                     else:
                         self.current_page = 1
@@ -150,44 +164,15 @@ class YanZhaoScraperFixed:
                 self.data = []
                 self.current_page = 1
                         
-            # 加载进度信息
-            if os.path.exists(progress_file):
-                with open(progress_file, 'r', encoding='utf-8') as f:
-                    progress = json.load(f)
-                    saved_page = progress.get('current_page', 1)
-                    saved_total = progress.get('total_pages', 1)
-                    print(f"进度文件显示上次处理到第{saved_page}页，共{saved_total}页")
-                    
-                    # 如果有保存的总页数，使用它
-                    if saved_total > 1:
-                        self.total_pages = saved_total
-                        
         except Exception as e:
             print(f"加载已有数据失败: {e}")
             self.data = []
             self.current_page = 1
     
     def save_progress(self, status="running"):
-        """保存进度信息（按专业区分）"""
-        try:
-            progress_file = f'progress_{self.major_code}.json'
-            progress_data = {
-                'major_code': self.major_code,
-                'major_name': self.major_info['name'],
-                'current_page': self.current_page,
-                'total_pages': self.total_pages,
-                'records_count': len(self.data),
-                'last_update': datetime.now().isoformat(),
-                'status': status,
-                'target_url': self.target_url
-            }
-            
-            with open(progress_file, 'w', encoding='utf-8') as f:
-                json.dump(progress_data, f, ensure_ascii=False, indent=2)
-                
-            self.logger.info(f"进度已保存到 {progress_file}")
-        except Exception as e:
-            self.logger.error(f"保存进度失败: {e}")
+        """保存进度信息 - 已废弃，改为依赖Excel文件"""
+        # 不再需要单独的进度文件，Excel文件本身就包含了所有进度信息
+        pass
     
     def get_target_url_by_major(self):
         """根据专业代码动态获取目标URL - 优化版本"""
@@ -225,14 +210,17 @@ class YanZhaoScraperFixed:
                 self.update_status(f"选择专业学位失败: {e}", "error")
                 return None
             
-            # 选择全日制 - 直接查找并点击
-            self.update_status("选择全日制...", "info")
+            # 选择学习方式 - 根据参数选择全日制或非全日制
+            study_mode_name = "全日制" if self.study_mode == "1" else "非全日制"
+            self.update_status(f"选择学习方式：{study_mode_name}...", "info")
             try:
-                fulltime_element = self.driver.find_element(By.XPATH, "//*[text()='全日制']")
-                self.driver.execute_script("arguments[0].click();", fulltime_element)
+                study_mode_element = self.driver.find_element(By.XPATH, f"//*[text()='{study_mode_name}']")
+                self.driver.execute_script("arguments[0].click();", study_mode_element)
                 time.sleep(2)
-            except:
-                # 全日制可选，如果找不到就跳过
+                self.update_status(f"已选择{study_mode_name}", "info")
+            except Exception as e:
+                # 学习方式可选，如果找不到就跳过
+                self.update_status(f"选择{study_mode_name}失败: {e}，继续执行", "warning")
                 pass
             
             # 选择专业类别 - 直接查找并点击
@@ -298,89 +286,204 @@ class YanZhaoScraperFixed:
             # 备用方案：直接使用已知的URL
             self.update_status("使用备用URL方案...", "info")
             if self.major_code == "125300":
-                backup_url = "https://yz.chsi.com.cn/zsml/zydetail.do?zydm=125300&zymc=%E4%BC%9A%E8%AE%A1&xwlx=zyxw&mldm=12&mlmc=%E7%AE%A1%E7%90%86%E5%AD%A6&yjxkdm=1253&yjxkmc=%E4%BC%9A%E8%AE%A1&xxfs=1&tydxs=&jsggjh=&sign=73f11afdfd7ae989f9112d36b83036c9"
-                self.update_status(f"使用会计专硕备用URL", "info")
+                backup_url = f"https://yz.chsi.com.cn/zsml/zydetail.do?zydm=125300&zymc=%E4%BC%9A%E8%AE%A1&xwlx=zyxw&mldm=12&mlmc=%E7%AE%A1%E7%90%86%E5%AD%A6&yjxkdm=1253&yjxkmc=%E4%BC%9A%E8%AE%A1&xxfs={self.study_mode}&tydxs=&jsggjh=&sign=73f11afdfd7ae989f9112d36b83036c9"
+                study_mode_name = "全日制" if self.study_mode == "1" else "非全日制"
+                self.update_status(f"使用会计专硕({study_mode_name})备用URL", "info")
                 return backup_url
             elif self.major_code == "125700":
-                backup_url = "https://yz.chsi.com.cn/zsml/zydetail.do?zydm=125700&zymc=%E5%AE%A1%E8%AE%A1&xwlx=zyxw&mldm=12&mlmc=%E7%AE%A1%E7%90%86%E5%AD%A6&yjxkdm=1257&yjxkmc=%E5%AE%A1%E8%AE%A1&xxfs=1&tydxs=&jsggjh="
-                self.update_status(f"使用审计专硕备用URL", "info")
+                backup_url = f"https://yz.chsi.com.cn/zsml/zydetail.do?zydm=125700&zymc=%E5%AE%A1%E8%AE%A1&xwlx=zyxw&mldm=12&mlmc=%E7%AE%A1%E7%90%86%E5%AD%A6&yjxkdm=1257&yjxkmc=%E5%AE%A1%E8%AE%A1&xxfs={self.study_mode}&tydxs=&jsggjh="
+                study_mode_name = "全日制" if self.study_mode == "1" else "非全日制"
+                self.update_status(f"使用审计专硕({study_mode_name})备用URL", "info")
                 return backup_url
             else:
                 self.update_status(f"未知专业代码，无法提供备用URL", "error")
                 return None
     
     def detect_total_pages(self):
-        """自动检测总页数"""
+        """自动检测总页数 - 基于实际页面分析优化版本"""
         try:
             self.update_status("正在检测总页数...", "info")
-            
-            # 查找分页信息的多种可能元素
-            page_selectors = [
-                "//li[contains(@class, 'last')]/a",  # 最后一页链接
-                "//a[contains(text(), '末页')]",      # 末页文字
-                "//span[contains(@class, 'page_index')]//strong[last()]",  # 页码范围
-                "//div[contains(@class, 'pagination')]//a[last()-1]",  # 分页容器中倒数第二个链接
-            ]
-            
             total_pages = 1  # 默认值
             
-            for selector in page_selectors:
-                try:
-                    elements = self.driver.find_elements(By.XPATH, selector)
-                    if elements:
-                        # 尝试从元素文本或属性中提取页数
-                        for element in elements:
-                            text = element.text.strip()
-                            if text.isdigit():
-                                detected_pages = int(text)
-                                if detected_pages > total_pages:
-                                    total_pages = detected_pages
-                            
-                            # 尝试从href属性中提取页数
-                            href = element.get_attribute('href')
-                            if href:
-                                import re
-                                page_match = re.search(r'page[=_](\d+)', href)
-                                if page_match:
-                                    detected_pages = int(page_match.group(1))
-                                    if detected_pages > total_pages:
-                                        total_pages = detected_pages
-                        break
-                except Exception as e:
-                    continue
+            # 首先等待页面完全加载
+            WebDriverWait(self.driver, 10).until(
+                lambda driver: driver.execute_script("return document.readyState") == "complete"
+            )
+            time.sleep(3)  # 等待Ajax和Vue实例加载完成
             
-            # 如果没有检测到分页信息，尝试查找页面上所有的数字链接
+            # 方法1（优先）：从Vue.js应用实例中获取总页数
+            try:
+                self.update_status("尝试从Vue应用获取总页数...", "info")
+                
+                # 等待Vue实例和数据加载完成
+                max_wait_time = 15  # 最多等待15秒
+                wait_start = time.time()
+                
+                while time.time() - wait_start < max_wait_time:
+                    js_result = self.driver.execute_script("""
+                        try {
+                            // 根据页面源码分析，查找Vue实例的多种方式
+                            var app = null;
+                            
+                            // 方式1：查找根元素的Vue实例
+                            var appDiv = document.getElementById('app') || document.querySelector('.app-wrapper') || document.querySelector('.main-wrapper');
+                            if (appDiv && appDiv.__vue__) {
+                                app = appDiv.__vue__;
+                            }
+                            
+                            // 方式2：遍历所有元素查找包含form.totalPage的Vue实例
+                            if (!app) {
+                                var allElements = document.querySelectorAll('*');
+                                for (var i = 0; i < allElements.length; i++) {
+                                    if (allElements[i].__vue__ && 
+                                        allElements[i].__vue__.form && 
+                                        typeof allElements[i].__vue__.form.totalPage !== 'undefined') {
+                                        app = allElements[i].__vue__;
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // 如果找到Vue实例且totalPage > 0，返回结果
+                            if (app && app.form && app.form.totalPage > 0) {
+                                return {
+                                    totalPage: app.form.totalPage,
+                                    curPage: app.form.curPage || 1,
+                                    pageSize: app.form.pageSize || 10,
+                                    source: 'vue_instance'
+                                };
+                            }
+                            
+                            return null;
+                        } catch (e) {
+                            return null;
+                        }
+                    """)
+                    
+                    if js_result and js_result.get('totalPage', 0) > 0:
+                        total_pages = int(js_result['totalPage'])
+                        self.update_status(f"✓ 从Vue应用获取到总页数：{total_pages}页", "success")
+                        break
+                    
+                    # 等待一段时间后重试
+                    time.sleep(1)
+                
+                if total_pages == 1:
+                    self.update_status("Vue应用中totalPage仍为0，尝试其他方法", "info")
+                    
+            except Exception as e:
+                self.update_status(f"从Vue应用获取总页数失败: {e}", "warning")
+            
+            # 方法2：从分页导航中直接获取最后一页页码
             if total_pages == 1:
                 try:
-                    page_links = self.driver.find_elements(By.XPATH, "//a[string-length(text()) <= 3 and number(text()) = number(text())]")
+                    self.update_status("尝试从分页导航获取总页数...", "info")
+                    
+                    # 查找分页导航中的所有数字链接
+                    page_links = self.driver.find_elements(By.XPATH, "//ul//li//a[text() and string-length(text()) <= 3]")
+                    
+                    max_page_found = 1
                     for link in page_links:
                         try:
-                            page_num = int(link.text.strip())
-                            if page_num > total_pages:
-                                total_pages = page_num
-                        except:
+                            text = link.text.strip()
+                            if text.isdigit():
+                                page_num = int(text)
+                                if 10 <= page_num <= 200:  # 合理的总页数范围 (10-200页)
+                                    max_page_found = max(max_page_found, page_num)
+                                    self.update_status(f"在分页导航中发现页码：{page_num}", "info")
+                        except Exception as link_error:
+                            self.logger.debug(f"解析页码链接失败: {link_error}")
                             continue
+                    
+                    if max_page_found > 1:
+                        total_pages = max_page_found
+                        self.update_status(f"✓ 从分页导航获取总页数：{total_pages}页", "success")
+                    else:
+                        # 如果没找到数字链接，尝试查找文本内容
+                        list_items = self.driver.find_elements(By.XPATH, "//ul//li")
+                        for item in list_items:
+                            try:
+                                text = item.text.strip()
+                                if text.isdigit():
+                                    page_num = int(text)
+                                    if 10 <= page_num <= 200:
+                                        max_page_found = max(max_page_found, page_num)
+                                        self.update_status(f"在列表项中发现页码：{page_num}", "info")
+                            except:
+                                continue
+                        
+                        if max_page_found > 1:
+                            total_pages = max_page_found
+                            self.update_status(f"✓ 从列表项获取总页数：{total_pages}页", "success")
+                    
                 except Exception as e:
-                    pass
+                    self.update_status(f"从分页导航获取总页数失败: {e}", "warning")
             
+            # 方法3：从"查询到X个相关招生单位"文本计算总页数
+            if total_pages == 1:
+                try:
+                    self.update_status("尝试从记录数计算总页数...", "info")
+                    
+                    # 查找包含总记录数的文本
+                    total_records_elements = self.driver.find_elements(By.XPATH, 
+                        "//*[contains(text(), '查询到') and contains(text(), '个相关招生单位')]"
+                    )
+                    
+                    for element in total_records_elements:
+                        text = element.text.strip()
+                        self.update_status(f"找到记录数文本：{text}", "info")
+                        
+                        # 解析"查询到323个相关招生单位"格式
+                        import re
+                        match = re.search(r'查询到\s*(\d+)\s*个相关招生单位', text)
+                        if match:
+                            total_records = int(match.group(1))
+                            # 每页显示10个院校，计算总页数
+                            calculated_pages = (total_records + 9) // 10  # 向上取整
+                            if calculated_pages > 0:
+                                total_pages = calculated_pages
+                                self.update_status(f"✓ 从记录数计算总页数：{total_records}条记录 → {total_pages}页", "success")
+                                break
+                    
+                except Exception as e:
+                    self.update_status(f"从记录数计算总页数失败: {e}", "warning")
+            
+            # 最终设置总页数
             self.total_pages = max(total_pages, 1)
-            self.update_status(f"检测到总页数：{self.total_pages}", "info")
+            
+            # 添加调试信息
+            if self.total_pages == 1:
+                self.update_status("⚠️ 总页数检测结果为1页，可能检测失败，请检查网站结构", "warning")
+                # 保存页面源码用于调试
+                try:
+                    page_source = self.driver.page_source
+                    with open("debug_page_source.html", "w", encoding="utf-8") as f:
+                        f.write(page_source)
+                    self.update_status("已保存页面源码到 debug_page_source.html 用于调试", "info")
+                except:
+                    pass
+            else:
+                self.update_status(f"✓ 成功检测到总页数：{self.total_pages}页", "success")
+            
+            # 立即更新界面显示总页数
+            if self.progress_callback:
+                self.update_progress(self.current_page, self.total_pages, len(self.data), "检测总页数完成")
+            
             return self.total_pages
             
         except Exception as e:
-            self.update_status(f"检测总页数失败，使用默认值1: {e}", "warning")
-            self.total_pages = 1
-            return 1
+            self.update_status(f"检测总页数失败: {e}，使用默认值33", "error")
+            self.total_pages = 33
+            return self.total_pages
     
     def setup_logging(self):
         """设置日志"""
-        log_filename = f'yanzhao_{self.major_code}.log'
+        # 只使用控制台输出，不生成日志文件
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler(log_filename, encoding='utf-8'),
-                logging.StreamHandler()
+                logging.StreamHandler()  # 只保留控制台输出
             ]
         )
         self.logger = logging.getLogger(__name__)
@@ -959,20 +1062,7 @@ class YanZhaoScraperFixed:
             success = self.save_data_to_excel()
             
             # 保存进度
-            self.save_progress(status=f"emergency_save_{reason}")
-            
-            # 保存运行日志摘要
-            summary = {
-                '保存时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                '保存原因': reason,
-                '当前页码': self.current_page,
-                '总记录数': len(self.data),
-                '文件名': self.excel_filename
-            }
-            
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            with open(f'紧急保存摘要_{timestamp}.json', 'w', encoding='utf-8') as f:
-                json.dump(summary, f, ensure_ascii=False, indent=2)
+            # self.save_progress(status=f"emergency_save_{reason}") # 不再需要单独的进度文件
                 
             self.logger.info(f"紧急保存完成: {self.excel_filename}")
             return success
@@ -997,13 +1087,28 @@ class YanZhaoScraperFixed:
             if start_page is None:
                 start_page = self.current_page
                 
+            # 修正总页数检测失败的问题
+            if self.total_pages <= 1:
+                self.update_status("⚠️ 总页数检测结果异常，使用默认值33页", "warning")
+                self.total_pages = 33  # 使用已知的合理默认值
+                
             if end_page is None:
                 end_page = self.total_pages
             elif end_page > self.total_pages:
                 end_page = self.total_pages
                 
-            self.update_status(f"断点续传：从第{start_page}页开始，到第{end_page}页结束（共{self.total_pages}页）")
-            self.update_status(f"当前已有数据：{len(self.data)}条记录")
+            # 确保起始页不大于结束页
+            if start_page > end_page:
+                self.update_status(f"⚠️ 起始页({start_page})大于结束页({end_page})，调整为从第{end_page}页开始", "warning")
+                start_page = end_page
+                
+            # 确保页面范围合理
+            if start_page < 1:
+                start_page = 1
+            if end_page < 1:
+                end_page = 1
+                
+            self.update_status(f"✓ 页面范围确认：第{start_page}页到第{end_page}页（共{self.total_pages}页）", "success")
             
             # 更新初始进度
             self.update_progress(start_page, self.total_pages, len(self.data), "初始化中")
@@ -1016,7 +1121,7 @@ class YanZhaoScraperFixed:
                     # 立即保存已获取的数据
                     if self.data:
                         self.save_data_to_excel()
-                        self.save_progress("user_stopped")
+                        # self.save_progress("user_stopped") # 不再需要单独的进度文件
                         self.update_status(f"用户停止，已保存{len(self.data)}条记录", "warning")
                     break
                     
@@ -1050,7 +1155,7 @@ class YanZhaoScraperFixed:
                             # 立即保存已获取的数据
                             if self.data:
                                 self.save_data_to_excel()
-                                self.save_progress("user_stopped")
+                                # self.save_progress("user_stopped") # 不再需要单独的进度文件
                                 self.update_status(f"用户停止，已保存{len(self.data)}条记录", "warning")
                             break
                             
@@ -1082,7 +1187,7 @@ class YanZhaoScraperFixed:
                         
                     # 每页完成后保存
                     self.save_data_to_excel()
-                    self.save_progress(f"completed_page_{page_num}")
+                    # self.save_progress(f"completed_page_{page_num}") # 不再需要单独的进度文件
                     
                     self.update_status(f"第{page_num}页完成，当前总记录数: {len(self.data)}")
                     
@@ -1114,7 +1219,7 @@ class YanZhaoScraperFixed:
             try:
                 if self.data:
                     self.save_data_to_excel()  # 最终保存
-                    self.save_progress("completed")
+                    # self.save_progress("completed") # 不再需要单独的进度文件
                     self.logger.info(f"程序结束，最终保存了{len(self.data)}条记录")
                 else:
                     self.logger.info("程序结束，没有获取到数据")
@@ -1191,13 +1296,47 @@ def main():
     print("研究生招生信息爬虫 - 修复版（支持断点续传）")
     print("=" * 50)
     
+    # 选择专业
+    print("可用专业：")
+    for i, (code, info) in enumerate(MAJOR_CONFIG.items(), 1):
+        print(f"{i}. {info['name']} ({code})")
+    
+    try:
+        choice = input(f"请选择专业 (1-{len(MAJOR_CONFIG)})，默认为1: ").strip()
+        if choice == "":
+            choice = "1"
+        choice_idx = int(choice) - 1
+        major_codes = list(MAJOR_CONFIG.keys())
+        selected_major = major_codes[choice_idx]
+    except (ValueError, IndexError):
+        print("无效选择，使用默认专业：会计专硕")
+        selected_major = "125300"
+    
+    # 选择学习方式
+    print("\n学习方式：")
+    print("1. 全日制")
+    print("2. 非全日制")
+    
+    try:
+        study_choice = input("请选择学习方式 (1/2)，默认为1: ").strip()
+        if study_choice == "":
+            study_choice = "1"
+        if study_choice not in ["1", "2"]:
+            study_choice = "1"
+    except:
+        study_choice = "1"
+    
+    study_mode_name = "全日制" if study_choice == "1" else "非全日制"
+    print(f"已选择：{MAJOR_CONFIG[selected_major]['name']} - {study_mode_name}")
+    print("=" * 50)
+    
     # 创建爬虫实例
     scraper = None
     scraper_full = None
     
     try:
-        # 创建爬虫实例
-        scraper = YanZhaoScraperFixed()
+        # 创建爬虫实例，传递专业和学习方式参数
+        scraper = YanZhaoScraperFixed(major_code=selected_major, study_mode=study_choice)
         
         # 检查是否是断点续传
         if scraper.current_page > 1 or len(scraper.data) > 0:
@@ -1232,12 +1371,6 @@ def main():
                 scraper.data = []
                 scraper.current_page = 1
                 
-                # 清空进度文件
-                progress_file = f'progress_{scraper.major_code}.json'
-                if os.path.exists(progress_file):
-                    os.remove(progress_file)
-                    print("已清空进度记录")
-                
                 # 删除Excel文件（重新开始时）
                 if os.path.exists(scraper.excel_filename):
                     try:
@@ -1266,7 +1399,7 @@ def main():
             user_input = input("测试成功，是否继续完整运行所有页面？(y/n): ")
             if user_input.lower() == 'y':
                 print("开始完整运行...")
-                scraper_full = YanZhaoScraperFixed()
+                scraper_full = YanZhaoScraperFixed(major_code=selected_major, study_mode=study_choice)
                 
                 try:
                     scraper_full.run(start_page=1, end_page=33)
