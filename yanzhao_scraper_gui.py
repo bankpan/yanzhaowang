@@ -77,12 +77,13 @@ class ScraperGUIWrapper(YanZhaoScraperFixed):
         return result
     
     def _update_gui_page_range(self):
-        """更新GUI界面的页面范围显示"""
+        """登录后更新GUI界面的页面范围显示（包含总页数和终止页）"""
         try:
             # 重新分析Excel文件来确定准确的起始页
             major_name = MAJOR_CONFIG[self.major_code]["name"]
             study_mode_name = "全日制" if self.study_mode == "1" else "非全日制"
-            excel_file = f"研究生招生信息_{major_name}_{study_mode_name}.xlsx"
+            info_type_name = "硕士点详情" if self.info_type == "details" else "仅研招院校"
+            excel_file = f"研究生招生信息_{major_name}_{study_mode_name}_{info_type_name}.xlsx"
             
             if os.path.exists(excel_file):
                 # 重新分析Excel文件（登录后的精确分析）
@@ -96,12 +97,12 @@ class ScraperGUIWrapper(YanZhaoScraperFixed):
                 self.current_page = start_page
                 self.gui_instance.log_message("没有发现历史数据文件，将从第1页开始爬取", "info")
             
-            # 获取总页数
+            # 获取总页数（登录后才能确定）
             total_pages = self.total_pages
             
-            # 全面更新界面显示
+            # 现在可以更新完整的页面范围信息
             self.gui_instance.start_page_var.set(str(start_page))
-            self.gui_instance.end_page_var.set(str(total_pages))  # 更新结束页
+            self.gui_instance.end_page_var.set(str(total_pages))  # 登录后才设置终止页
             self.gui_instance.page_info.config(text=f"第{start_page}页 / 共{total_pages}页")
             self.gui_instance.records_info.config(text=f"{records_count} 条")
             
@@ -126,8 +127,9 @@ class ScraperGUIWrapper(YanZhaoScraperFixed):
             
             # 记录详细信息到日志
             self.gui_instance.log_message(f"✓ 登录成功！总页数：{total_pages}页", "success")
-            self.gui_instance.log_message(f"✓ 起始页：第{start_page}页，已有记录：{records_count}条", "success")
             self.gui_instance.log_message(f"✓ 页面范围：第{start_page}页到第{total_pages}页", "success")
+            self.gui_instance.log_message(f"✓ 起始页计算：第{start_page}页（已有{records_count}条记录）", "success")
+            self.gui_instance.log_message(f"✓ 终止页计算：第{total_pages}页（登录后检测）", "success")
             
         except Exception as e:
             self.gui_instance.log_message(f"更新页面范围显示失败: {e}", "error")
@@ -137,8 +139,8 @@ class ScraperGUI:
         """初始化GUI界面"""
         self.root = root
         self.root.title("研究生招生信息爬虫管理器")
-        self.root.geometry("900x800")  # 增加窗口大小以容纳更多内容
-        self.root.minsize(800, 700)    # 增加最小窗口大小
+        self.root.geometry("1000x800")  # 适当增加窗口宽度以容纳新布局
+        self.root.minsize(900, 700)     # 适当增加最小窗口宽度
         
         # 爬虫实例
         self.scraper = None
@@ -155,6 +157,7 @@ class ScraperGUI:
         # 控件变量
         self.major_var = tk.StringVar(value="125300 - 会计专硕")
         self.study_mode_var = tk.StringVar(value="1")  # 学习方式：1=全日制，2=非全日制
+        self.info_type_var = tk.StringVar(value="details")  # 信息类型：details=硕士点详情，universities=仅研招院校
         self.start_page_var = tk.StringVar(value="待确定")
         self.end_page_var = tk.StringVar(value="")
         self.test_limit_var = tk.StringVar(value="2")
@@ -201,6 +204,25 @@ class ScraperGUI:
             self.log_message(f"已切换学习方式: {study_mode_name}", "info")
         except Exception as e:
             self.log_message(f"切换学习方式失败: {e}", "error")
+    
+    def on_info_type_changed(self):
+        """信息类型改变时的处理"""
+        try:
+            info_type = self.info_type_var.get()
+            info_type_name = "硕士点详情" if info_type == "details" else "仅研招院校"
+            
+            # 重新检查当前专业的数据（因为文件名包含信息类型）
+            if hasattr(self, 'current_major'):
+                self.update_page_range_for_major(self.current_major)
+            
+            # 根据信息类型更新界面提示
+            if info_type == "universities":
+                self.log_message(f"已切换到信息类型: {info_type_name} (快速模式，仅获取院校名称)", "info")
+            else:
+                self.log_message(f"已切换到信息类型: {info_type_name} (详细模式，获取完整硕士点信息)", "info")
+                
+        except Exception as e:
+            self.log_message(f"切换信息类型失败: {e}", "error")
     
     def update_page_range_for_major(self, major_code):
         """根据专业更新页面范围显示"""
@@ -259,34 +281,34 @@ class ScraperGUI:
         try:
             major_name = MAJOR_CONFIG[major_code]["name"]
             study_mode = self.study_mode_var.get()
+            info_type = self.info_type_var.get()
             study_mode_name = "全日制" if study_mode == "1" else "非全日制"
-            excel_file = f"研究生招生信息_{major_name}_{study_mode_name}.xlsx"
+            info_type_name = "硕士点详情" if info_type == "details" else "仅研招院校"
+            excel_file = f"研究生招生信息_{major_name}_{study_mode_name}_{info_type_name}.xlsx"
             
             # 检查Excel文件是否存在
             if os.path.exists(excel_file):
-                # 分析Excel文件数据（仅用于内部记录，不在界面显示具体页码）
+                # 分析Excel文件数据，立即计算起始页（不需要等登录）
                 current_page, records_count, status_msg = self.analyze_excel_data(excel_file)
                 
-                # 记录分析结果到内部变量，但界面暂不显示具体页码
+                # 立即更新起始页相关信息
                 self.detected_start_page = current_page
                 self.detected_records_count = records_count
                 
-                self.log_message(f"发现该专业({study_mode_name})的数据文件：{excel_file}，包含{records_count}条记录", "info")
+                self.log_message(f"发现该专业({study_mode_name}-{info_type_name})的数据文件：{excel_file}，包含{records_count}条记录", "info")
                 self.log_message(status_msg, "info")
                 
                 # 立即更新界面显示起始页（不需要等登录）
-                self.detected_start_page = current_page
-                self.detected_records_count = records_count
-                
-                # 立即更新界面显示
                 self.start_page_var.set(str(current_page))
-                self.page_info.config(text=f"第{current_page}页 / 总页数待检测")
                 self.records_info.config(text=f"{records_count} 条")
+                
+                # 页面信息：起始页已确定，但终止页需要登录后确定
+                self.page_info.config(text=f"第{current_page}页 / 总页数需登录后确定")
                 
                 # 如果有数据，自动选择继续模式
                 if current_page > 1 or records_count > 0:
                     self.mode_var.set("continue")
-                    self.status_info.config(text="有进度", foreground="orange")
+                    self.status_info.config(text="有进度数据", foreground="orange")
                 else:
                     self.status_info.config(text="就绪", foreground="green")
             else:
@@ -294,12 +316,19 @@ class ScraperGUI:
                 self.detected_start_page = 1
                 self.detected_records_count = 0
                 self.status_info.config(text="就绪", foreground="green")
-                self.log_message(f"该专业({study_mode_name})暂无数据文件", "info")
+                self.log_message(f"该专业({study_mode_name}-{info_type_name})暂无数据文件", "info")
                 
                 # 立即更新界面显示
                 self.start_page_var.set("1")
-                self.page_info.config(text="第1页 / 总页数待检测")
+                self.page_info.config(text="第1页 / 总页数需登录后确定")
                 self.records_info.config(text="0 条")
+                
+            # 重置终止页显示（因为需要登录后重新计算）
+            self.end_page_var.set("")
+            
+            # 重置进度显示（需要总页数）
+            self.progress_var.set(0)
+            self.progress_text.config(text="需登录确定总页数")
                 
         except Exception as e:
             self.log_message(f"检查专业数据失败: {e}", "error")
@@ -307,11 +336,12 @@ class ScraperGUI:
             self.detected_start_page = 1
             self.detected_records_count = 0
             self.records_info.config(text="0 条")
-            self.page_info.config(text="待检测...")
-            self.start_page_var.set("待确定")
+            self.page_info.config(text="数据检查失败")
+            self.start_page_var.set("1")
+            self.end_page_var.set("")
             self.mode_var.set("restart")
             self.status_info.config(text="就绪", foreground="green")
-        
+    
     def create_widgets(self):
         """创建GUI组件"""
         
@@ -388,65 +418,75 @@ class ScraperGUI:
         settings_frame = ttk.LabelFrame(main_frame, text="运行设置", padding="10")
         settings_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         
+        # 第一行：专业选择 + 学习方式 + 信息类型
         # 专业选择
-        ttk.Label(settings_frame, text="选择专业:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
-        major_frame = ttk.Frame(settings_frame)
-        major_frame.grid(row=0, column=1, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        major_combobox = ttk.Combobox(major_frame, textvariable=self.major_var, width=20, state="readonly")
+        ttk.Label(settings_frame, text="选择专业:").grid(row=0, column=0, sticky=tk.W, padx=(0, 5))
+        major_combobox = ttk.Combobox(settings_frame, textvariable=self.major_var, width=18, state="readonly")
         major_combobox['values'] = [f"{code} - {info['name']}" for code, info in MAJOR_CONFIG.items()]
-        major_combobox.grid(row=0, column=0, sticky=tk.W)
+        major_combobox.grid(row=0, column=1, sticky=tk.W, padx=(0, 15))
         major_combobox.bind('<<ComboboxSelected>>', self.on_major_changed)
         
         # 学习方式选择
-        ttk.Label(settings_frame, text="学习方式:").grid(row=0, column=2, sticky=tk.W, padx=(20, 10))
+        ttk.Label(settings_frame, text="学习方式:").grid(row=0, column=2, sticky=tk.W, padx=(0, 5))
         study_mode_frame = ttk.Frame(settings_frame)
-        study_mode_frame.grid(row=0, column=3, sticky=tk.W, pady=(0, 10))
+        study_mode_frame.grid(row=0, column=3, sticky=tk.W, padx=(0, 15))
         
         fulltime_radio = ttk.Radiobutton(study_mode_frame, text="全日制", variable=self.study_mode_var, 
                                         value="1", command=self.on_study_mode_changed)
-        fulltime_radio.grid(row=0, column=0, padx=(0, 10))
+        fulltime_radio.grid(row=0, column=0, padx=(0, 8))
         
         parttime_radio = ttk.Radiobutton(study_mode_frame, text="非全日制", variable=self.study_mode_var, 
                                         value="2", command=self.on_study_mode_changed)
         parttime_radio.grid(row=0, column=1)
         
-        # 运行模式选择
-        ttk.Label(settings_frame, text="运行模式:").grid(row=1, column=0, sticky=tk.W, padx=(0, 10))
+        # 信息类型选择
+        ttk.Label(settings_frame, text="信息类型:").grid(row=0, column=4, sticky=tk.W, padx=(0, 5))
+        info_type_frame = ttk.Frame(settings_frame)
+        info_type_frame.grid(row=0, column=5, sticky=tk.W)
+        
+        details_radio = ttk.Radiobutton(info_type_frame, text="硕士点详情", variable=self.info_type_var, 
+                                       value="details", command=self.on_info_type_changed)
+        details_radio.grid(row=0, column=0, padx=(0, 8))
+        
+        universities_radio = ttk.Radiobutton(info_type_frame, text="仅研招院校", variable=self.info_type_var, 
+                                           value="universities", command=self.on_info_type_changed)
+        universities_radio.grid(row=0, column=1)
+        
+        # 第二行：运行模式选择
+        ttk.Label(settings_frame, text="运行模式:").grid(row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(10, 0))
         mode_frame = ttk.Frame(settings_frame)
-        mode_frame.grid(row=1, column=1, sticky=tk.W)
+        mode_frame.grid(row=1, column=1, columnspan=3, sticky=tk.W, pady=(10, 0))
         
         ttk.Radiobutton(mode_frame, text="继续之前的任务", variable=self.mode_var, 
-                       value="continue").grid(row=0, column=0, sticky=tk.W, padx=(0, 15))
+                       value="continue").grid(row=0, column=0, sticky=tk.W, padx=(0, 12))
         ttk.Radiobutton(mode_frame, text="重新开始", variable=self.mode_var, 
-                       value="restart").grid(row=0, column=1, sticky=tk.W, padx=(0, 15))
+                       value="restart").grid(row=0, column=1, sticky=tk.W, padx=(0, 12))
         ttk.Radiobutton(mode_frame, text="测试运行", variable=self.mode_var, 
                        value="test").grid(row=0, column=2, sticky=tk.W)
         
-        # 页面范围设置
-        range_frame = ttk.Frame(settings_frame)
-        range_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 0))
-        
-        ttk.Label(range_frame, text="页面范围:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
-        
-        ttk.Label(range_frame, text="从第").grid(row=0, column=1, sticky=tk.W, padx=(0, 5))
-        start_page_entry = ttk.Entry(range_frame, textvariable=self.start_page_var, width=5)
-        start_page_entry.grid(row=0, column=2, padx=(0, 5))
-        
-        ttk.Label(range_frame, text="页到第").grid(row=0, column=3, sticky=tk.W, padx=(0, 5))
-        end_page_entry = ttk.Entry(range_frame, textvariable=self.end_page_var, width=5)
-        end_page_entry.grid(row=0, column=4, padx=(0, 5))
-        
-        ttk.Label(range_frame, text="页 (空白=自动检测, 测试模式限制每页").grid(row=0, column=5, sticky=tk.W, padx=(0, 5))
-        test_limit_entry = ttk.Entry(range_frame, textvariable=self.test_limit_var, width=3)
-        test_limit_entry.grid(row=0, column=6, padx=(0, 5))
-        
-        ttk.Label(range_frame, text="个院校)").grid(row=0, column=7, sticky=tk.W)
-        
-        # 无头模式选项
+        # 无头模式选项（放在运行模式同一行的右侧）
         self.headless_var = tk.BooleanVar(value=True)  # 默认选中无头模式
-        headless_check = ttk.Checkbutton(range_frame, text="无头模式（后台运行）", variable=self.headless_var)
-        headless_check.grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(5, 0))
+        headless_check = ttk.Checkbutton(mode_frame, text="无头模式（后台运行）", variable=self.headless_var)
+        headless_check.grid(row=0, column=4, sticky=tk.W, padx=(20, 0))
+        
+        # 第三行：页面范围设置
+        ttk.Label(settings_frame, text="页面范围:").grid(row=2, column=0, sticky=tk.W, padx=(0, 5), pady=(10, 0))
+        range_frame = ttk.Frame(settings_frame)
+        range_frame.grid(row=2, column=1, columnspan=5, sticky=tk.W, pady=(10, 0))
+        
+        ttk.Label(range_frame, text="从第").grid(row=0, column=0, sticky=tk.W, padx=(0, 3))
+        start_page_entry = ttk.Entry(range_frame, textvariable=self.start_page_var, width=5)
+        start_page_entry.grid(row=0, column=1, padx=(0, 3))
+        
+        ttk.Label(range_frame, text="页到第").grid(row=0, column=2, sticky=tk.W, padx=(0, 3))
+        end_page_entry = ttk.Entry(range_frame, textvariable=self.end_page_var, width=5)
+        end_page_entry.grid(row=0, column=3, padx=(0, 3))
+        
+        ttk.Label(range_frame, text="页 (空白=自动检测, 测试模式限制每页").grid(row=0, column=4, sticky=tk.W, padx=(0, 3))
+        test_limit_entry = ttk.Entry(range_frame, textvariable=self.test_limit_var, width=3)
+        test_limit_entry.grid(row=0, column=5, padx=(0, 3))
+        
+        ttk.Label(range_frame, text="个院校)").grid(row=0, column=6, sticky=tk.W)
 
         
         # 日志显示区域
@@ -484,41 +524,48 @@ class ScraperGUI:
             self.log_message(f"检查已有数据时出错: {e}", "error")
     
     def update_initial_progress_display(self):
-        """更新初始的进度显示（基于Excel文件，不需要登录）"""
+        """更新初始的进度显示（仅基于Excel文件起始页，总页数需登录后确定）"""
         try:
             # 根据已检测到的数据更新界面
             start_page = self.detected_start_page
             records_count = self.detected_records_count
             
-            # 设置起始页显示
+            # 设置起始页显示（立即显示，无需等待登录）
             self.start_page_var.set(str(start_page))
             
-            # 设置页面信息（总页数待登录后确定）
-            self.page_info.config(text=f"第{start_page}页 / 总页数待确定")
+            # 设置页面信息（强调总页数需要登录后确定）
+            self.page_info.config(text=f"第{start_page}页 / 总页数需登录后确定")
             
             # 设置记录数
             self.records_info.config(text=f"{records_count} 条")
             
-            # 进度需要总页数，等登录后再显示
+            # 明确不设置终止页（需要登录后才能确定）
+            self.end_page_var.set("")
+            
+            # 进度显示需要总页数，必须等登录后再显示
             self.progress_var.set(0)
-            self.progress_text.config(text="待登录确定")
+            self.progress_text.config(text="需登录确定总页数")
             
             # 设置状态
             if records_count > 0:
                 self.status_info.config(text="有历史数据", foreground="orange")
                 self.log_message(f"✓ 检测到历史数据：第{start_page}页开始，已有{records_count}条记录", "info")
+                self.log_message(f"ℹ️ 总页数和终止页将在登录后自动检测", "info")
             else:
                 self.status_info.config(text="新任务", foreground="green")
                 self.log_message("✓ 新任务：将从第1页开始", "info")
-                
+                self.log_message(f"ℹ️ 总页数和终止页将在登录后自动检测", "info")
+            
         except Exception as e:
-            # 设置默认值
-            self.progress_var.set(0)
-            self.progress_text.config(text="待登录确定")
-            self.page_info.config(text="第1页 / 总页数待确定")
+            self.log_message(f"更新初始显示失败: {e}", "error")
+            # 设置安全默认值
+            self.start_page_var.set("1")
+            self.end_page_var.set("")
+            self.page_info.config(text="第1页 / 总页数需登录后确定")
             self.records_info.config(text="0 条")
+            self.progress_var.set(0)
+            self.progress_text.config(text="需登录确定总页数")
             self.status_info.config(text="就绪", foreground="green")
-            self.log_message(f"更新初始进度显示失败: {e}", "error")
             
     def log_message(self, message, level="info"):
         """在日志区域显示消息"""
@@ -654,15 +701,21 @@ class ScraperGUI:
             
             # 获取页面范围设置
             start_page_str = self.start_page_var.get()
-            if start_page_str in ["待确定", "待检测...", ""]:
+            if start_page_str in ["待确定", "待检测...", "", "数据检查失败"]:
                 # 如果还没有确定起始页，使用检测到的值
                 start_page = self.detected_start_page
+                self.log_message(f"使用自动检测的起始页：第{start_page}页", "info")
             else:
-                # 使用界面上的设置（可能是登录后更新的准确值）
+                # 使用界面上的设置（用户可能手动修改过，或者是登录后更新的值）
                 try:
                     start_page = int(start_page_str)
+                    if start_page != self.detected_start_page:
+                        self.log_message(f"使用用户设置的起始页：第{start_page}页（自动检测为第{self.detected_start_page}页）", "info")
+                    else:
+                        self.log_message(f"使用起始页：第{start_page}页", "info")
                 except:
                     start_page = self.detected_start_page
+                    self.log_message(f"起始页格式错误，使用自动检测值：第{start_page}页", "warning")
             
             end_page = int(self.end_page_var.get()) if self.end_page_var.get() else None
             test_limit = int(self.test_limit_var.get()) if mode == "test" else None
@@ -676,9 +729,11 @@ class ScraperGUI:
                 messagebox.showerror("错误", "结束页面不能小于起始页面！")
                 return
             
-            # 获取学习方式
+            # 获取学习方式和信息类型
             study_mode = self.study_mode_var.get()
+            info_type = self.info_type_var.get()
             study_mode_name = "全日制" if study_mode == "1" else "非全日制"
+            info_type_name = "硕士点详情" if info_type == "details" else "仅研招院校"
             
             # 创建爬虫实例，传递正确的headless参数
             self.scraper = ScraperGUIWrapper(
@@ -687,14 +742,15 @@ class ScraperGUI:
                 status_callback=self.status_callback,
                 headless=headless_mode,  # 使用界面选择的无头模式设置
                 major_code=major_code,
-                study_mode=study_mode
+                study_mode=study_mode,
+                info_type=info_type
             )
                 
             # 记录运行模式
             mode_text = "无头模式（后台运行）" if headless_mode else "可视模式（显示浏览器）"
             major_name = MAJOR_CONFIG[major_code]["name"]
-            self.log_message(f"启动爬虫 - {mode_text} - 专业：{major_name} - 学习方式：{study_mode_name}")
-            self.log_message(f"已创建爬虫实例 - 专业: {MAJOR_CONFIG[major_code]['name']}, 学习方式: {study_mode_name}, 模式: {mode_text}", "info")
+            self.log_message(f"启动爬虫 - {mode_text} - 专业：{major_name} - 学习方式：{study_mode_name} - 信息类型：{info_type_name}")
+            self.log_message(f"已创建爬虫实例 - 专业: {MAJOR_CONFIG[major_code]['name']}, 学习方式: {study_mode_name}, 信息类型: {info_type_name}, 模式: {mode_text}", "info")
                 
             # 根据模式调整参数
             if mode == "restart":
@@ -705,7 +761,8 @@ class ScraperGUI:
                 # 删除该专业和学习方式的Excel文件（重新开始时）
                 major_name = MAJOR_CONFIG[major_code]['name']
                 study_mode_name = "全日制" if study_mode == "1" else "非全日制"
-                excel_file = f"研究生招生信息_{major_name}_{study_mode_name}.xlsx"
+                info_type_name = "硕士点详情" if info_type == "details" else "仅研招院校"
+                excel_file = f"研究生招生信息_{major_name}_{study_mode_name}_{info_type_name}.xlsx"
                 if os.path.exists(excel_file):
                     try:
                         os.remove(excel_file)

@@ -51,11 +51,12 @@ MAJOR_CONFIG = {
 }
 
 class YanZhaoScraperFixed:
-    def __init__(self, progress_callback=None, status_callback=None, headless=False, major_code="125300", study_mode="1"):
+    def __init__(self, progress_callback=None, status_callback=None, headless=False, major_code="125300", study_mode="1", info_type="details"):
         """初始化爬虫"""
         self.headless = headless  # 无头模式标志
         self.major_code = major_code  # 选择的专业代码
         self.study_mode = study_mode  # 学习方式：1=全日制，2=非全日制
+        self.info_type = info_type  # 信息类型：details=硕士点详情，universities=仅研招院校
         self.major_info = MAJOR_CONFIG.get(major_code, MAJOR_CONFIG["125300"])  # 专业信息
         
         # 先设置回调函数，避免setup_driver调用时出错
@@ -78,9 +79,10 @@ class YanZhaoScraperFixed:
         self.username = "18042003196"
         self.password = "421950abcABC"
         
-        # 设置Excel文件名（包含学习方式信息）
+        # 设置Excel文件名（包含学习方式和信息类型）
         study_mode_name = "全日制" if self.study_mode == "1" else "非全日制"
-        self.excel_filename = f"研究生招生信息_{self.major_info['name']}_{study_mode_name}.xlsx"
+        info_type_name = "硕士点详情" if self.info_type == "details" else "仅研招院校"
+        self.excel_filename = f"研究生招生信息_{self.major_info['name']}_{study_mode_name}_{info_type_name}.xlsx"
         
         # 尝试加载已有数据和进度
         self.load_existing_data()
@@ -98,8 +100,10 @@ class YanZhaoScraperFixed:
             self.major_code = major_code
             self.major_info = MAJOR_CONFIG[major_code]
             
-            # 更新文件名（固定文件名，不使用时间戳）
-            self.excel_filename = f"研究生招生信息_{self.major_info['name']}.xlsx"
+            # 更新文件名（包含学习方式和信息类型）
+            study_mode_name = "全日制" if self.study_mode == "1" else "非全日制"
+            info_type_name = "硕士点详情" if self.info_type == "details" else "仅研招院校"
+            self.excel_filename = f"研究生招生信息_{self.major_info['name']}_{study_mode_name}_{info_type_name}.xlsx"
             
             # 重新加载该专业的进度
             self.load_existing_data()
@@ -761,52 +765,192 @@ class YanZhaoScraperFixed:
     def navigate_to_page(self, page_num):
         """导航到指定页面"""
         try:
-            if page_num == 1:
-                self.logger.info("已在第1页")
+            self.logger.info(f"尝试导航到第{page_num}页")
+            
+            # 如果已经在目标页面，无需导航
+            current_actual_page = self.get_current_page_number()
+            if current_actual_page == page_num:
+                self.current_page = page_num
+                self.logger.info(f"已在第{page_num}页")
                 return True
             
-            self.logger.info(f"导航到第{page_num}页")
-            
-            # 查找页码链接
+            # 方法1：直接点击页码链接
             page_links = self.driver.find_elements(By.XPATH, f"//li/a[text()='{page_num}']")
             if page_links:
+                self.logger.info(f"使用页码链接导航到第{page_num}页")
                 page_links[0].click()
                 time.sleep(3)
-                self.current_page = page_num
-                self.logger.info(f"成功导航到第{page_num}页")
-                return True
-            else:
-                # 如果找不到直接的页码链接，尝试使用下一页按钮
-                for _ in range(page_num - self.current_page):
-                    next_buttons = self.driver.find_elements(By.XPATH, "//li[contains(@class, 'next')]/a | //a[contains(text(), '下一页')]")
+                
+                # 验证是否成功导航到目标页面
+                actual_page = self.get_current_page_number()
+                if actual_page == page_num:
+                    self.current_page = page_num
+                    self.logger.info(f"✓ 成功导航到第{page_num}页")
+                    return True
+                else:
+                    self.logger.warning(f"页码链接点击后页面不符：期望第{page_num}页，实际第{actual_page}页")
+            
+            # 方法2：使用下一页按钮逐步导航
+            if current_actual_page < page_num:
+                self.logger.info(f"使用下一页按钮从第{current_actual_page}页导航到第{page_num}页")
+                attempts = 0
+                max_attempts = 20  # 防止无限循环
+                
+                while current_actual_page < page_num and attempts < max_attempts:
+                    # 查找下一页按钮
+                    next_buttons = self.driver.find_elements(By.XPATH, 
+                        "//li[contains(@class, 'next')]/a | //a[contains(text(), '下一页')] | //a[contains(@title, '下一页')]")
+                    
                     if next_buttons:
                         next_buttons[0].click()
                         time.sleep(2)
-                        self.current_page += 1
-                    else:
-                        break
+                        attempts += 1
                         
-                self.logger.info(f"通过下一页按钮导航到第{self.current_page}页")
-                return True
+                        # 获取当前实际页码
+                        new_page = self.get_current_page_number()
+                        if new_page > current_actual_page:
+                            current_actual_page = new_page
+                            self.logger.info(f"通过下一页按钮导航到第{current_actual_page}页")
+                        else:
+                            self.logger.warning(f"下一页按钮点击后页码未变化，停止尝试")
+                            break
+                    else:
+                        self.logger.warning("未找到下一页按钮，停止导航")
+                        break
+                
+                # 检查最终结果
+                if current_actual_page == page_num:
+                    self.current_page = page_num
+                    self.logger.info(f"✓ 成功通过下一页按钮导航到第{page_num}页")
+                    return True
+                else:
+                    self.logger.error(f"导航失败：目标第{page_num}页，实际停留在第{current_actual_page}页")
+                    self.current_page = current_actual_page  # 更新为实际页码
+                    return False
+            
+            # 方法3：使用上一页按钮（如果目标页小于当前页）
+            elif current_actual_page > page_num:
+                self.logger.info(f"使用上一页按钮从第{current_actual_page}页导航到第{page_num}页")
+                attempts = 0
+                max_attempts = 20
+                
+                while current_actual_page > page_num and attempts < max_attempts:
+                    prev_buttons = self.driver.find_elements(By.XPATH, 
+                        "//li[contains(@class, 'prev')]/a | //a[contains(text(), '上一页')] | //a[contains(@title, '上一页')]")
+                    
+                    if prev_buttons:
+                        prev_buttons[0].click()
+                        time.sleep(2)
+                        attempts += 1
+                        
+                        new_page = self.get_current_page_number()
+                        if new_page < current_actual_page:
+                            current_actual_page = new_page
+                            self.logger.info(f"通过上一页按钮导航到第{current_actual_page}页")
+                        else:
+                            self.logger.warning(f"上一页按钮点击后页码未变化，停止尝试")
+                            break
+                    else:
+                        self.logger.warning("未找到上一页按钮，停止导航")
+                        break
+                
+                if current_actual_page == page_num:
+                    self.current_page = page_num
+                    self.logger.info(f"✓ 成功通过上一页按钮导航到第{page_num}页")
+                    return True
+                else:
+                    self.logger.error(f"导航失败：目标第{page_num}页，实际停留在第{current_actual_page}页")
+                    self.current_page = current_actual_page
+                    return False
+            
+            return False
             
         except Exception as e:
             self.logger.error(f"导航到第{page_num}页失败: {e}")
+            # 发生异常时，确保current_page反映实际状态
+            try:
+                actual_page = self.get_current_page_number()
+                self.current_page = actual_page
+                self.logger.info(f"异常后更新当前页码为实际页码：第{actual_page}页")
+            except:
+                pass
             return False
+    
+    def get_current_page_number(self):
+        """获取当前页面的实际页码"""
+        try:
+            # 方法1：从Vue应用实例获取当前页码
+            js_result = self.driver.execute_script("""
+                try {
+                    var app = null;
+                    
+                    // 查找Vue实例
+                    var appDiv = document.getElementById('app') || document.querySelector('.app-wrapper') || document.querySelector('.main-wrapper');
+                    if (appDiv && appDiv.__vue__) {
+                        app = appDiv.__vue__;
+                    }
+                    
+                    if (!app) {
+                        var allElements = document.querySelectorAll('*');
+                        for (var i = 0; i < allElements.length; i++) {
+                            if (allElements[i].__vue__ && 
+                                allElements[i].__vue__.form && 
+                                typeof allElements[i].__vue__.form.curPage !== 'undefined') {
+                                app = allElements[i].__vue__;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (app && app.form && app.form.curPage > 0) {
+                        return app.form.curPage;
+                    }
+                    
+                    return null;
+                } catch (e) {
+                    return null;
+                }
+            """)
             
+            if js_result and js_result > 0:
+                return int(js_result)
+            
+            # 方法2：从分页导航中查找当前页（高亮或active状态）
+            current_page_elements = self.driver.find_elements(By.XPATH, 
+                "//li[contains(@class, 'active')]//a | //li[contains(@class, 'current')]//a | //a[contains(@class, 'active')] | //a[contains(@class, 'current')]")
+            
+            for element in current_page_elements:
+                try:
+                    text = element.text.strip()
+                    if text.isdigit():
+                        page_num = int(text)
+                        if 1 <= page_num <= 200:  # 合理范围
+                            return page_num
+                except:
+                    continue
+            
+            # 方法3：默认返回1（如果其他方法都失败）
+            self.logger.warning("无法确定当前页码，默认返回1")
+            return 1
+            
+        except Exception as e:
+            self.logger.warning(f"获取当前页码失败: {e}，默认返回1")
+            return 1
+    
     def get_universities_on_page(self):
-        """获取当前页面的所有院校 - 基于调试程序的成功经验"""
+        """获取当前页面的所有院校 - 根据信息类型选择不同处理方式"""
+        if self.info_type == "universities":
+            return self.get_universities_simple()
+        else:
+            return self.get_universities_detailed()
+    
+    def get_universities_simple(self):
+        """获取院校列表（快速模式 - 仅研招院校）"""
         try:
             # 等待页面加载完成
             time.sleep(2)
             
-            # 直接查找展开按钮 - 这是调试程序证明有效的方法
-            expand_buttons = self.driver.find_elements(By.XPATH, "//a[contains(text(), '展开')]")
-            
-            if not expand_buttons:
-                self.logger.error("未找到展开按钮")
-                return []
-                
-            self.logger.info(f"找到{len(expand_buttons)}个展开按钮")
+            self.logger.info(f"第{self.current_page}页 - 快速模式：仅获取院校信息")
             
             # 获取院校名称 - 基于调试程序的成功经验
             university_names = []
@@ -820,7 +964,55 @@ class YanZhaoScraperFixed:
                 except:
                     continue
                     
-            self.logger.info(f"找到{len(university_names)}个院校名称")
+            self.logger.info(f"快速模式：找到{len(university_names)}个院校名称")
+            
+            # 构建简化的院校列表
+            universities = []
+            for i, name in enumerate(university_names):
+                universities.append({
+                    'name': name,
+                    'index': i + 1,
+                    'mode': 'simple'  # 标记为简单模式
+                })
+                self.logger.info(f"快速模式 - 找到院校: {name}")
+                    
+            self.logger.info(f"第{self.current_page}页快速模式：成功获取{len(universities)}个院校")
+            return universities
+            
+        except Exception as e:
+            self.logger.error(f"快速模式获取院校列表失败: {e}")
+            return []
+    
+    def get_universities_detailed(self):
+        """获取院校列表（详细模式 - 硕士点详情）"""
+        try:
+            # 等待页面加载完成
+            time.sleep(2)
+            
+            self.logger.info(f"第{self.current_page}页 - 详细模式：获取院校及硕士点详情")
+            
+            # 直接查找展开按钮 - 这是调试程序证明有效的方法
+            expand_buttons = self.driver.find_elements(By.XPATH, "//a[contains(text(), '展开')]")
+            
+            if not expand_buttons:
+                self.logger.error("详细模式：未找到展开按钮")
+                return []
+                
+            self.logger.info(f"详细模式：找到{len(expand_buttons)}个展开按钮")
+            
+            # 获取院校名称 - 基于调试程序的成功经验
+            university_names = []
+            name_elements = self.driver.find_elements(By.XPATH, "//*[contains(text(), '大学') or contains(text(), '学院')]")
+            
+            for elem in name_elements:
+                try:
+                    text = elem.text.strip()
+                    if text and ('大学' in text or '学院' in text) and '(' in text and text.startswith('('):
+                        university_names.append(text)
+                except:
+                    continue
+                    
+            self.logger.info(f"详细模式：找到{len(university_names)}个院校名称")
             
             # 构建院校列表
             universities = []
@@ -834,26 +1026,68 @@ class YanZhaoScraperFixed:
                         'name': name,
                         'element': parent,
                         'expand_button': button,
-                        'index': i + 1
+                        'index': i + 1,
+                        'mode': 'detailed'  # 标记为详细模式
                     })
                     
-                    self.logger.info(f"找到院校: {name}")
+                    self.logger.info(f"详细模式 - 找到院校: {name}")
                     
                 except Exception as e:
-                    self.logger.warning(f"处理第{i+1}个院校时出错: {e}")
+                    self.logger.warning(f"详细模式：处理第{i+1}个院校时出错: {e}")
                     continue
                     
-            self.logger.info(f"在第{self.current_page}页成功构建{len(universities)}个院校")
+            self.logger.info(f"第{self.current_page}页详细模式：成功构建{len(universities)}个院校")
             return universities
             
         except Exception as e:
-            self.logger.error(f"获取院校列表失败: {e}")
+            self.logger.error(f"详细模式获取院校列表失败: {e}")
             return []
             
     def process_university(self, university):
-        """处理单个院校的所有硕士点"""
+        """处理单个院校 - 根据模式选择不同处理方式"""
+        if university.get('mode') == 'simple':
+            return self.process_university_simple(university)
+        else:
+            return self.process_university_detailed(university)
+    
+    def process_university_simple(self, university):
+        """处理单个院校（快速模式 - 仅院校信息）"""
         try:
-            self.logger.info(f"开始处理院校: {university['name']}")
+            self.logger.info(f"快速模式：处理院校 {university['name']}")
+            
+            # 提取院校代码（从院校名称中解析）
+            university_code = ""
+            university_display_name = university['name']
+            
+            if university['name'].startswith('(') and ')' in university['name']:
+                # 格式：(10001)北京大学
+                parts = university['name'].split(')', 1)
+                if len(parts) == 2:
+                    university_code = parts[0][1:]  # 去掉左括号
+                    university_display_name = parts[1]
+            
+            # 构建简化的数据记录
+            university_data = {
+                '招生单位': university['name'],
+                '院校代码': university_code,
+                '院校名称': university_display_name,
+                '页码': self.current_page,
+                '院校序号': university['index'],
+                '爬取时间': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                '信息类型': '仅研招院校'
+            }
+            
+            self.logger.info(f"快速模式：成功获取院校信息 - {university_display_name} ({university_code})")
+            return [university_data]  # 返回列表保持一致性
+            
+        except Exception as e:
+            self.logger.error(f"快速模式：处理院校 {university['name']} 失败: {e}")
+            return []
+    
+    def process_university_detailed(self, university):
+        """处理单个院校（详细模式 - 硕士点详情）"""
+        try:
+            self.logger.info(f"详细模式：开始处理院校: {university['name']}")
             
             # 点击展开按钮
             university['expand_button'].click()
@@ -863,17 +1097,17 @@ class YanZhaoScraperFixed:
             detail_links = self.driver.find_elements(By.XPATH, "//a[contains(text(), '详情')]")
             
             if not detail_links:
-                self.logger.warning(f"院校 {university['name']} 没有找到详情链接")
+                self.logger.warning(f"详细模式：院校 {university['name']} 没有找到详情链接")
                 return []
                 
-            self.logger.info(f"院校 {university['name']} 找到{len(detail_links)}个详情链接")
+            self.logger.info(f"详细模式：院校 {university['name']} 找到{len(detail_links)}个详情链接")
             
             university_data = []
             
             # 处理每个详情链接
             for i, detail_link in enumerate(detail_links):
                 try:
-                    self.logger.info(f"处理 {university['name']} 的第{i+1}个硕士点")
+                    self.logger.info(f"详细模式：处理 {university['name']} 的第{i+1}个硕士点")
                     
                     # 点击详情链接
                     detail_link.click()
@@ -887,6 +1121,7 @@ class YanZhaoScraperFixed:
                     details = self.extract_program_details(university['name'], i + 1)
                     
                     if details:
+                        details['信息类型'] = '硕士点详情'  # 添加信息类型标识
                         university_data.append(details)
                         
                     # 关闭详情窗口，返回主窗口
@@ -895,7 +1130,7 @@ class YanZhaoScraperFixed:
                     time.sleep(1)
                     
                 except Exception as e:
-                    self.logger.error(f"处理 {university['name']} 第{i+1}个硕士点失败: {e}")
+                    self.logger.error(f"详细模式：处理 {university['name']} 第{i+1}个硕士点失败: {e}")
                     # 确保返回主窗口
                     try:
                         if len(self.driver.window_handles) > 1:
@@ -911,14 +1146,14 @@ class YanZhaoScraperFixed:
                 if collapse_buttons:
                     collapse_buttons[0].click()
                     time.sleep(1)
-                    self.logger.info(f"收起院校: {university['name']}")
+                    self.logger.info(f"详细模式：收起院校: {university['name']}")
             except Exception as e:
-                self.logger.warning(f"收起院校 {university['name']} 失败: {e}")
+                self.logger.warning(f"详细模式：收起院校 {university['name']} 失败: {e}")
                 
             return university_data
             
         except Exception as e:
-            self.logger.error(f"处理院校 {university['name']} 失败: {e}")
+            self.logger.error(f"详细模式：处理院校 {university['name']} 失败: {e}")
             return []
             
     def extract_program_details(self, university_name, program_index):
@@ -1136,11 +1371,19 @@ class YanZhaoScraperFixed:
                     if not self.navigate_to_page(page_num):
                         self.update_status(f"导航到第{page_num}页失败", "error")
                         continue
+                    
+                    # 双重验证：确保当前页码与实际页面一致
+                    actual_page = self.get_current_page_number()
+                    if actual_page != page_num:
+                        self.update_status(f"⚠️ 页码不一致警告：期望第{page_num}页，实际第{actual_page}页", "warning")
+                        # 更新当前页码为实际页码，避免数据记录错误
+                        self.current_page = actual_page
+                        self.update_status(f"已更正页码记录为第{actual_page}页", "info")
                         
                     # 获取院校列表
                     universities = self.get_universities_on_page()
                     if not universities:
-                        self.update_status(f"第{page_num}页没有找到院校", "warning")
+                        self.update_status(f"第{self.current_page}页没有找到院校", "warning")
                         continue
                         
                     # 限制每页处理的院校数量（用于测试）
